@@ -1,0 +1,26 @@
+# xeda design for litex-sata-alientek-davincipro: what `make -C litex-sata-alientek-davincipro`
+# builds. Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run fpga_pack litex-sata-alientek-davincipro/litex-sata-alientek-davincipro.yaml
+#
+# `litex_pcie.v` reads its `.init` memory images with `$readmemh("litex_pcie_rom.init")`: yosys
+# finds them beside the source, and xeda tracks them from yosys's own list of files read.
+#
+# KNOWN FAILING in `xeda_check.py` (stage 1): xeda's synthesis script is not the Makefile's, and
+# abc9 maps this SoC differently (170407 FASM features upstream, 167096 here). Fed the Makefile's
+# own netlist as a `JsonNetlist` source, xeda's nextpnr and fpga_pack give the identical FASM and
+# bitstream, so the difference is in synthesis alone (xeda issue Y4, plan 39 Q1).
+name: litex-sata-alientek-davincipro
+description: LiteX SoC with a SATA core (GTP transceivers) on the Alientek DavinciPro
+rtl:
+  top: litex_pcie
+  sources:
+    - litex_pcie.v
+    - ../vexriscv/VexRiscv.v
+    - litex_pcie.xdc
+
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a35tfgg484-2
+  nextpnr:
+    timing_allow_fail: true
