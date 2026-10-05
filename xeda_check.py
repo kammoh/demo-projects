@@ -39,6 +39,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
+# loading `normbit.py` must not leave a `__pycache__` in the checkout
+sys.dont_write_bytecode = True
+
 # `make` variables a demo needs on its command line, by design file (the Makefile of `picosoc`
 # selects its part by BOARD)
 MAKE_ARGS: dict[str, list[str]] = {}
