@@ -1,0 +1,16 @@
+# xeda design for picosoc-genesys2: what `make -C picosoc BOARD=genesys2` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: picosoc-genesys2
+rtl:
+  top: top
+  sources:
+    - genesys2.v
+    - picosoc_noflash.v
+    - picorv32.v
+    - progmem.v
+    - simpleuart.v
+    - picosoc-genesys2.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg900-2

@@ -1,0 +1,12 @@
+# xeda design for blinky-qmtech: what `make -C blinky-qmtech` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: blinky-qmtech
+rtl:
+  top: blinky
+  sources:
+    - blinky.v
+    - blinky.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg676-1

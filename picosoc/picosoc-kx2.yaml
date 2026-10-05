@@ -1,0 +1,16 @@
+# xeda design for picosoc-kx2: what `make -C picosoc BOARD=kx2` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: picosoc-kx2
+rtl:
+  top: top
+  sources:
+    - kx2.v
+    - picosoc_noflash.v
+    - picorv32.v
+    - progmem.v
+    - simpleuart.v
+    - picosoc-kx2.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k160tffg676-2

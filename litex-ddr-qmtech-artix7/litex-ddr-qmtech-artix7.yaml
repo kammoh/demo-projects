@@ -1,0 +1,15 @@
+# xeda design for litex-ddr-qmtech-artix7: what `make -C litex-ddr-qmtech-artix7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-qmtech-artix7
+rtl:
+  top: qmtech_artix7_fgg676
+  sources:
+    - qmtech_artix7_fgg676.v
+    - ../vexriscv/VexRiscv.v
+    - qmtech_artix7_fgg676.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a100tfgg676-1
+  nextpnr:
+    timing_allow_fail: true

@@ -1,0 +1,29 @@
+# xeda design for litex-minimal-arty-s7: what `make -C litex-minimal-arty-s7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-minimal-arty-s7
+rtl:
+  top: digilent_arty_s7
+  sources:
+    - digilent_arty_s7.v
+    - ../serv/serv_aligner.v
+    - ../serv/serv_alu.v
+    - ../serv/serv_bufreg.v
+    - ../serv/serv_bufreg2.v
+    - ../serv/serv_compdec.v
+    - ../serv/serv_csr.v
+    - ../serv/serv_ctrl.v
+    - ../serv/serv_decode.v
+    - ../serv/serv_immdec.v
+    - ../serv/serv_mem_if.v
+    - ../serv/serv_rf_if.v
+    - ../serv/serv_rf_ram.v
+    - ../serv/serv_rf_ram_if.v
+    - ../serv/serv_rf_top.v
+    - ../serv/serv_state.v
+    - ../serv/serv_synth_wrapper.v
+    - ../serv/serv_top.v
+    - digilent_arty_s7.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7s50csga324-1

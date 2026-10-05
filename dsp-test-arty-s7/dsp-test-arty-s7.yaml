@@ -1,0 +1,13 @@
+# xeda design for dsp-test-arty-s7: what `make -C dsp-test-arty-s7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: dsp-test-arty-s7
+rtl:
+  top: top
+  sources:
+    - top.v
+    - uart_tx.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7s50csga324-1

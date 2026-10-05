@@ -1,0 +1,15 @@
+# xeda design for litex-ddr-kc705: what `make -C litex-ddr-kc705` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-kc705
+rtl:
+  top: xilinx_kc705
+  sources:
+    - xilinx_kc705.v
+    - ../vexriscv/VexRiscv.v
+    - xilinx_kc705.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg900-2
+  nextpnr:
+    timing_allow_fail: true

@@ -1,0 +1,12 @@
+# xeda design for blinky-genesys2: what `make -C blinky-genesys2` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: blinky-genesys2
+rtl:
+  top: blinky
+  sources:
+    - blinky.v
+    - blinky.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg900-2

@@ -1,0 +1,16 @@
+# xeda design for litex-ddr-qmtech-kintex7: what `make -C litex-ddr-qmtech-kintex7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-qmtech-kintex7
+rtl:
+  top: qmtech_xc7k325t
+  sources:
+    - qmtech_xc7k325t.v
+    - ../vexriscv_smp/Ram_1w_1rs_Generic.v
+    - ../vexriscv_smp/VexRiscvLitexSmpCluster_Cc1_Iw32Is4096Iy1_Dw32Ds4096Dy1_ITs4DTs4_Ldw128_Ood.v
+    - qmtech_xc7k325t.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg676-1
+  nextpnr:
+    timing_allow_fail: true

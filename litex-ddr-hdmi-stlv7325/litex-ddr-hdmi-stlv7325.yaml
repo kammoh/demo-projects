@@ -1,0 +1,16 @@
+# xeda design for litex-ddr-hdmi-stlv7325: what `make -C litex-ddr-hdmi-stlv7325` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-hdmi-stlv7325
+rtl:
+  top: sitlinv_stlv7325
+  sources:
+    - sitlinv_stlv7325.v
+    - ../vexriscv/VexRiscv.v
+    - sitlinv_stlv7325.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg676-1
+  nextpnr:
+    timing_allow_fail: true
+    extra_args: ["--freq", "50"]

@@ -1,0 +1,12 @@
+# xeda design for blinky-stlv7325: what `make -C blinky-stlv7325` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: blinky-stlv7325
+rtl:
+  top: blinky
+  sources:
+    - blinky.v
+    - blinky.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg676-1

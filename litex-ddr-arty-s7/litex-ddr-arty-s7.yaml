@@ -1,0 +1,13 @@
+# xeda design for litex-ddr-arty-s7: what `make -C litex-ddr-arty-s7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-arty-s7
+rtl:
+  top: digilent_arty_s7
+  sources:
+    - digilent_arty_s7.v
+    - ../vexriscv/VexRiscv_Min.v
+    - digilent_arty_s7.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7s50csga324-1

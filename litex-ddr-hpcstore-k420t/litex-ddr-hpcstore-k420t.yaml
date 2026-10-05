@@ -1,0 +1,15 @@
+# xeda design for litex-ddr-hpcstore-k420t: what `make -C litex-ddr-hpcstore-k420t` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: litex-ddr-hpcstore-k420t
+rtl:
+  top: hpcstore_xc7k420t
+  sources:
+    - hpcstore_xc7k420t.v
+    - ../vexriscv/VexRiscv.v
+    - hpcstore_xc7k420t.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k420tffg901-1
+  nextpnr:
+    timing_allow_fail: true

@@ -1,0 +1,22 @@
+# xeda design for ddr3-test-arty-s7: what `make -C ddr3-test-arty-s7` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: ddr3-test-arty-s7
+rtl:
+  top: arty_ddr3
+  sources:
+    - arty_ddr3.v
+    - ddr3_controller.v
+    - ddr3_phy.v
+    - ddr3_top.v
+    - uart.v
+    - uart_rx.v
+    - uart_tx.v
+    - clk_wiz_0.v
+    - clk_wiz_0_clk_wiz.v
+    - arty_ddr3.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7s50csga324-1
+  nextpnr:
+    timing_allow_fail: true

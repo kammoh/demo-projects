@@ -1,0 +1,12 @@
+# xeda design for ps7-blinky-digilent-pynqz1: what `make -C ps7-blinky-digilent-pynqz1` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found.
+name: ps7-blinky-digilent-pynqz1
+rtl:
+  top: ps7_axi_blinky
+  sources:
+    - ps7_axi_blinky.v
+    - ps7_axi_blinky.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7z020clg400-1
