@@ -1,0 +1,16 @@
+# xeda project file for this repository.
+#
+# The `flows` section is the repository's own recipe, the one `openXC7.mk` runs for every
+# demo: `yosys synth_xilinx -flatten -abc9 -arch xc7`, with yosys's own abc9 script and without
+# xeda's additions. It applies to every design built from this directory; a design file's own
+# `flows` section is applied over it. Build without it (xeda's defaults) by running from the
+# design's directory, where no project file is found.
+#
+# Never declare `rtl.clocks` / `clock` in a design whose XDC has its own `create_clock`: xeda would
+# add a second one, and an abc9 delay target the Makefile does not have.
+flows:
+  yosys_fpga:
+    flatten: true            # `synth_xilinx -flatten`
+    flow3: false             # yosys's default abc9 script, not xeda's `abc9.script.flow3`
+    check_assert: false      # openXC7.mk does not run `check -assert`
+    read_verilog_flags: []   # plain `read_verilog`: no `-sv`, no `-noautowire`

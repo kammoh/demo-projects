@@ -61,3 +61,7 @@ ioi-err.txt
 nobram.txt
 out
 log
+
+# ---- xeda ----
+xeda_run/
+.xeda-check/
