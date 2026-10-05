@@ -1,0 +1,21 @@
+# xeda design for hdmi-stlv7325: what `make -C hdmi-stlv7325` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run fpga_pack hdmi-stlv7325/hdmi-stlv7325.yaml
+#
+# `hdmi_demo.v` reads `hdmi_demo_mem.init` (LiteX's SoC identifier string: 53 bytes, with the
+# build date in them). Upstream's `.gitignore` has `*.init` and does not track this one, and the
+# Makefile does not make it: run `hdmi_demo.py` (LiteX) first, which `xeda_check.py` does when
+# the file is missing. yosys finds it beside the source, and xeda tracks it from yosys's own
+# list of files read.
+name: hdmi-stlv7325
+description: Colorbars on HDMI (TMDS_33) on the STLV7325-v2, a LiteX SoC without a CPU
+rtl:
+  top: hdmi_demo
+  sources:
+    - hdmi_demo.v
+    - hdmi_demo.xdc
+
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7k325tffg676-1
