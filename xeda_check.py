@@ -209,10 +209,22 @@ def fasm_features(path: Path) -> list[str]:
     return [line for line in lines if line and not line.startswith("#")]
 
 
+def fasm_comments(path: Path) -> list[str]:
+    """The comment lines, with yosys's numbering of generated names (`$abc$2027$...`) taken out:
+    the same names carry other numbers when the cell library is read before the design."""
+    lines = (line.strip() for line in path.read_text().splitlines())
+    return [re.sub(r"\$\d+", "$N", line) for line in lines if line.startswith("#")]
+
+
 def compare_fasm(upstream: Path, ours: Path) -> tuple[bool, str]:
     a, b = fasm_features(upstream), fasm_features(ours)
     if a == b:
-        return True, f"identical ({len(a)} features, same order)"
+        # what `tests/test_openxc7_real.py` compares too; the comments decide nothing here
+        same = fasm_comments(upstream) == fasm_comments(ours)
+        return (
+            True,
+            f"identical ({len(a)} features, same order; comments {'' if same else 'not '}equal)",
+        )
     if sorted(a) == sorted(b):
         return False, f"the same {len(a)} features in a different order"
     only_a, only_b = sorted(set(a) - set(b)), sorted(set(b) - set(a))
