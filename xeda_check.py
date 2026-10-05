@@ -118,7 +118,7 @@ def make_variables(directory: Path, env: dict[str, str], args: list[str]) -> dic
     return values
 
 
-def build_upstream(demo: Path, work: Path, args: list[str], log) -> dict:
+def build_upstream(demo: Path, work: Path, shared: Path, args: list[str], log) -> dict:
     scratch = export_tree(demo, work)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     variables = make_variables(scratch, env, args)
@@ -127,7 +127,7 @@ def build_upstream(demo: Path, work: Path, args: list[str], log) -> dict:
     for suffix in ("json", "fasm", "bit", "frames"):
         (scratch / f"{project}.{suffix}").unlink(missing_ok=True)
     # one chip database cache for all checks, which the Makefile fills the way it always does
-    chipdb = work / "chipdb" / family
+    chipdb = shared / "chipdb" / family
     chipdb.mkdir(parents=True, exist_ok=True)
     env[f"{family.upper()}_CHIPDB"] = str(chipdb)
     cmd = ["make", "-C", str(scratch), *args]
@@ -149,10 +149,10 @@ def build_upstream(demo: Path, work: Path, args: list[str], log) -> dict:
 # ---- the xeda build -----------------------------------------------------------------------
 
 
-def build_xeda(design: Path, mode: str, work: Path, xeda: str, log) -> dict:
+def build_xeda(design: Path, mode: str, work: Path, shared: Path, xeda: str, log) -> dict:
     """`xeda run fpga_pack --json`, from here ("repository": the project file is found) or
-    from an empty directory ("defaults"). One run root for both, whose chip databases they
-    share; their run directories are told apart by the settings hash."""
+    from an empty directory ("defaults"). One run root for every check, whose chip databases they
+    share; the run directories of the two modes are told apart by the settings hash."""
     cwd = HERE if mode == "repository" else work / "no-project-file"
     cwd.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -164,7 +164,7 @@ def build_xeda(design: Path, mode: str, work: Path, xeda: str, log) -> dict:
         "--clean",
         "--hashed-run-dirs",
         "--run-root",
-        str(work / "xeda_run"),
+        str(shared / "xeda_run"),
     ]
     log(f"xeda ({mode}): {' '.join(cmd)}  (from {cwd})")
     run = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
@@ -290,10 +290,11 @@ def check_design(design: Path, work: Path, xeda: str, log) -> Verdict:
     demo = design.parent
     verdict = Verdict(str(design.relative_to(HERE)))
     args = MAKE_ARGS.get(verdict.design, [])
+    shared = work
     work = work / design.stem
     work.mkdir(parents=True, exist_ok=True)
 
-    upstream = build_upstream(demo, work, args, log)
+    upstream = build_upstream(demo, work, shared, args, log)
     if not upstream["ok"]:
         verdict.lines.append(f"upstream: BUILD FAILED: {upstream['error']}")
         return verdict
@@ -303,7 +304,7 @@ def check_design(design: Path, work: Path, xeda: str, log) -> Verdict:
 
     passed = True
     for mode in ("repository", "defaults"):
-        ours = build_xeda(design, mode, work, xeda, log)
+        ours = build_xeda(design, mode, work, shared, xeda, log)
         label = f"xeda {mode}:"
         if not ours["ok"]:
             verdict.lines.append(f"{label:<18}BUILD FAILED: {ours['error']}")
