@@ -45,6 +45,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -158,7 +159,7 @@ def litex_shim(spec: dict, python: str | None, work: Path) -> dict[str, str]:
     shim = work / "litex-bin"
     shim.mkdir(parents=True, exist_ok=True)
     wrapper = shim / executable.name
-    wrapper.write_text(f'#!/bin/sh\nexec "{litex_python(python)}" "$@"\n')
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(litex_python(python))} "$@"\n')
     wrapper.chmod(0o755)
     return {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
 
