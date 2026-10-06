@@ -2025,13 +2025,18 @@ def regression(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
 
 
 def regression_designs(names: list[str]) -> list[Path]:
-    """The design files of the named cases, or of `run.sh`'s default cases."""
+    """The design files of the named cases, or of `run.sh`'s default cases but those excluded
+    (`xeda-exclusions.yaml`, which `--ci-list` checks); a case with neither is an error."""
+    excluded = {} if names else read_exclusions()
     found = []
     for case in names or regression_cases():
         design = REGRESSION / case / f"{case}.yaml"
-        if not design.is_file():
+        if design.is_file():
+            found.append(design)
+        elif f"regression/{case}" in excluded:
+            print(f"regression/{case}: excluded: {excluded[f'regression/{case}']}")
+        else:
             raise SetupError(f"regression/{case} has no design file {design.name}")
-        found.append(design)
     return found
 
 

@@ -368,6 +368,26 @@ def test_a_regression_case_s_own_markers_give_its_verdict(tmp_path: Path) -> Non
         assert xeda_check.regression_verdict_kind(case) == kind
 
 
+def test_the_default_regression_cases_leave_out_only_an_excluded_one(tmp_path: Path, monkeypatch) -> None:
+    """With no case named, every case of run.sh's default list has a design file or an exclusion;
+    a case with neither fails, and a case named on purpose needs its design file."""
+    root = tmp_path / "fork"
+    write(root / "regression/run.sh", 'cases=("$@"); [ ${#cases[@]} -eq 0 ] && cases=(alpha beta gamma)\n')
+    for case in ("alpha", "gamma"):
+        write(root / f"regression/{case}/{case}.yaml", f"name: reg-{case}\n")
+    monkeypatch.setattr(xeda_check, "HERE", root)
+    monkeypatch.setattr(xeda_check, "REGRESSION", root / "regression")
+    monkeypatch.setattr(xeda_check, "EXCLUSIONS", root / "xeda-exclusions.yaml")
+    with pytest.raises(xeda_check.SetupError, match="regression/beta has no design file"):
+        xeda_check.regression_designs([])
+    write(root / "xeda-exclusions.yaml", "excluded:\n  regression/beta: placement-only\n")
+    assert xeda_check.regression_designs([]) == [
+        root / "regression/alpha/alpha.yaml", root / "regression/gamma/gamma.yaml"
+    ]
+    with pytest.raises(xeda_check.SetupError, match="regression/beta has no design file"):
+        xeda_check.regression_designs(["beta"])
+
+
 def regression_case(root: Path, check: str | None) -> Path:
     """A case directory as upstream writes one: `expect.txt` and an executable `check.sh`."""
     case = root / "case"
