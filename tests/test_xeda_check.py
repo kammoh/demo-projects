@@ -318,6 +318,19 @@ def test_a_rebuilt_toolchain_gets_chip_databases_of_its_own(tmp_path: Path, monk
     assert directory() in seen
 
 
+def test_a_generated_verilog_file_is_compared_without_its_comments(tmp_path: Path) -> None:
+    """LiteX's date comment and its module tree comment change between generations; the code
+    is what yosys reads, and a change there is a change."""
+    def generated(name: str, date: str, tree: str, code: str) -> bytes:
+        path = tmp_path / name
+        path.write_text(f"// Date      : {date}\n/*\n{tree}\n*/\nmodule soc; {code}\nendmodule\n")
+        return xeda_check.generated_content(path)
+
+    first = generated("a.v", "2026-10-06 17:00", "BB:FDCE\nBB:PLLE2_ADV", "wire a;")
+    assert generated("b.v", "2026-10-06 18:00", "BB:PLLE2_ADV\nBB:FDCE", "wire a;") == first
+    assert generated("c.v", "2026-10-06 17:00", "BB:FDCE\nBB:PLLE2_ADV", "wire b;") != first
+
+
 def test_the_netlist_design_has_the_makefiles_netlist_for_its_hdl(fork: Path, tmp_path: Path) -> None:
     import yaml
 
