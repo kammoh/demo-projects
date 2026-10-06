@@ -1,0 +1,21 @@
+# xeda design for the regression case `lut_shared_pin`: what `regression/run.sh lut_shared_pin` builds
+# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run nextpnr regression/lut_shared_pin/lut_shared_pin.yaml
+# `part.txt` names xc7z010clg400, with no speed grade; xeda needs the full part, so this
+# file names xc7z010clg400-1 (the grade changes neither the FASM nor the chip database).
+name: reg-lut_shared_pin
+rtl:
+  top: top
+  sources:
+    - top.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7z010clg400-1
+    nodsp: true
+    synth_flags: [-nocarry]
+  nextpnr:
+    timing_allow_fail: true
+    write: top_routed.json

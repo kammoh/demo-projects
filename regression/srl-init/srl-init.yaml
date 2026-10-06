@@ -1,0 +1,19 @@
+# xeda design for the regression case `srl-init`: what `regression/run.sh srl-init` builds
+# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run nextpnr regression/srl-init/srl-init.yaml
+name: reg-srl-init
+rtl:
+  top: top
+  sources:
+    - top.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a200tfbg484-2
+    nodsp: true
+    synth_flags: [-nocarry]
+  nextpnr:
+    timing_allow_fail: true
+    write: top_routed.json

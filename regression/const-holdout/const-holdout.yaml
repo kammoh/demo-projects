@@ -1,0 +1,21 @@
+# xeda design for the regression case `const-holdout`: what `regression/run.sh const-holdout` builds
+# (`synth_xilinx -flatten -abc9 -nocarry -nodsp -nobram`, then nextpnr with `--timing-allow-fail`).
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run nextpnr regression/const-holdout/const-holdout.yaml
+name: reg-const-holdout
+rtl:
+  top: top
+  sources:
+    - top.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a35tcsg324-1
+    nodsp: true
+    nobram: true
+    synth_flags: [-nocarry]
+  nextpnr:
+    timing_allow_fail: true
+    write: top_routed.json
+    seed: 1

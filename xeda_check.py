@@ -10,6 +10,7 @@
     python xeda_check.py --synth-only --all --jobs 3     # yosys on both sides, minutes, no chip database
     python xeda_check.py --twice blinky-digilent-arty    # two clean xeda builds, bitstreams equal
     python xeda_check.py --from-makefile-netlist picosoc/picosoc-kx2.yaml   # xeda's P&R on the Makefile's netlist
+    python xeda_check.py --regression                    # run.sh's default regression cases, both ways
 
 For each design this runs two builds and compares what they write:
 
@@ -51,6 +52,13 @@ The four modes above the QoR one each ask one narrower question; the design file
                          `fpga` given to both flows), compared with the Makefile's FASM and bitstream.
                          It leaves synthesis out: a design that fails the normal check and passes
                          this one differs from the Makefile in synthesis alone.
+  --regression           the regression cases (`regression/<case>/<case>.yaml`; with no case named,
+                         the default list of `regression/run.sh`): `run.sh <case>` in a scratch
+                         export gives upstream's verdict, and xeda's build of the design file
+                         (`xeda run nextpnr`, both modes) is judged by the case's own files the
+                         same way (a non-empty FASM, `expect.txt`, `check.sh`; `expect_fail`: nextpnr
+                         must fail). Repository mode must give run.sh's verdict. A placement-only
+                         case (`no_route`) has no FASM and is not judged.
 
 Per-design arguments for xeda (`timing_allow_fail`, `extra_args`, `synth_flags`) are the design
 file's own; the checker adds none. The one thing it passes to `make` is `MAKE_ARGS`: picosoc's
@@ -1799,6 +1807,205 @@ def from_makefile_netlist(design: Path, work: Path, xeda: str, mode: str, log) -
 
 
 
+# ---- --regression -----------------------------------------------------------------------------
+#
+# `regression/run.sh` builds each case with its own recipe (no Makefile) and judges it by the case's
+# own files: a non-empty FASM, then `expect.txt`'s patterns, then `check.sh`; a case with an
+# `expect_fail` marker must make nextpnr fail and its `check.sh` read `nextpnr.log`. The checker
+# runs `run.sh` itself in a scratch export (the upstream verdict) and judges xeda's build of the
+# case's design file by the same files (xeda's verdict); the two verdicts must be equal. A
+# placement-only case (`no_route`) has no FASM and no xeda verdict: it is excluded
+# (`xeda-exclusions.yaml`).
+
+REGRESSION = HERE / "regression"
+
+FAMILIES = {"xc7a": "artix7", "xc7k": "kintex7", "xc7s": "spartan7", "xc7z": "zynq7"}
+
+
+def regression_verdict_kind(case: Path) -> str:
+    """What the case's own markers say it must do: `placed` (`no_route`), `expect-fail`
+    (`expect_fail`) or `pass`."""
+    if (case / "no_route").exists():
+        return "placed"
+    return "expect-fail" if (case / "expect_fail").exists() else "pass"
+
+
+def regression_chipdb(part: str, work: Path, shared: Path, env: dict[str, str], log) -> Path:
+    """The Makefile side's chip database for *part* (the Makefile rule of `openXC7.mk`, through a
+    one-line demo Makefile in the scratch), shared with the demos of the same part."""
+    family = FAMILIES.get(part[:4])
+    if family is None:
+        raise SetupError(f"no family for part {part}")
+    dbpart = re.sub(r"-[0-9]", "", part)
+    scratch = work / "chipdb-make" / dbpart
+    scratch.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / "openXC7.mk", scratch.parent / "openXC7.mk")
+    (scratch / "Makefile").write_text(
+        f"FAMILY = {family}\nPART = {part}\nPROJECT = chipdb\n"
+        f"CHIPDB = ${{{family.upper()}_CHIPDB}}\n\ninclude ../openXC7.mk\n"
+    )
+    chipdb = chipdb_directory(shared, family, env)
+    chipdb.mkdir(parents=True, exist_ok=True)
+    env = dict(env, **{f"{family.upper()}_CHIPDB": str(chipdb)})
+    chipdb_ready(scratch, chipdb, dbpart, env, log)
+    return chipdb / f"{dbpart}.bin"
+
+
+def regression_case_part(case: Path) -> str:
+    """The part a case is built for: its `part.txt`, which may lack the speed grade (`run.sh`
+    needs only the chip database); the design file names the full part."""
+    return (case / "part.txt").read_text().strip()
+
+
+def run_upstream_regression(case: str, work: Path, chipdb: Path, env: dict[str, str]) -> dict:
+    """`regression/run.sh <case>` in a scratch export of `regression/`, with a `CHIPDB_DIR` that
+    holds just the case's chip database under the names `run.sh` looks for."""
+    target = work / "upstream"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    archive = subprocess.run(
+        ["git", "archive", "HEAD", "regression"], cwd=HERE, check=True, capture_output=True
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        tar.extractall(target, filter="data")
+    links = work / "chipdb-dir"
+    if links.exists():
+        shutil.rmtree(links)
+    links.mkdir()
+    part = regression_case_part(target / "regression" / case)
+    for name in {f"{part}.bin", f"{part.rsplit('-', 1)[0]}.bin", chipdb.name}:
+        (links / name).symlink_to(chipdb)
+    env = dict(env, CHIPDB_DIR=str(links))
+    env.pop("CHIPDB", None)
+    run = subprocess.run(
+        ["bash", str(target / "regression" / "run.sh"), case],
+        env=env, capture_output=True, text=True,
+    )
+    (work / "upstream.log").write_text(run.stdout + run.stderr)
+    line = next((l.strip() for l in run.stdout.splitlines() if l.strip().startswith(case)), "")
+    words = line.split()
+    outcome = words[1] if len(words) > 1 else "NOTHING"
+    return {
+        "ok": outcome == "ok",
+        "outcome": line[len(case):].strip() or f"no verdict line (exit {run.returncode})",
+        "returncode": run.returncode,
+        "case_dir": target / "regression" / case,
+    }
+
+
+def judge_regression(
+    case_dir: Path, kind: str, built: dict, check_dir: Path, chipdb: Path
+) -> tuple[bool, str]:
+    """xeda's build of a case, judged as `run.sh` judges its own: for `pass`, a successful build
+    with a non-empty FASM, `expect.txt`'s patterns in it and `check.sh` passing; for
+    `expect-fail`, nextpnr failing and `check.sh` passing on its log. `check.sh` runs in a copy of
+    the case directory (it reads files beside itself) holding xeda's netlist (`top.json`), its
+    routed design (`top_routed.json`), FASM (`top.fasm`) and `nextpnr.log`; `CHIPDB` is the
+    Makefile side's database of the part, for a check that runs nextpnr again."""
+    nodes = {n["flow"]: n for n in (built.get("doc") or {}).get("nodes", [])}
+    pnr = nodes.get("nextpnr")
+    if kind == "expect-fail":
+        if built["ok"]:
+            return False, "xeda's nextpnr succeeded where the case expects it to fail"
+        if pnr is None or pnr.get("state") != "failed":
+            return False, f"the build failed before nextpnr: {built['error']}"
+    elif not built["ok"]:
+        return False, f"BUILD FAILED: {built['error']}"
+    if check_dir.exists():
+        shutil.rmtree(check_dir)
+    shutil.copytree(case_dir, check_dir, symlinks=True)
+    run_path = Path(pnr["run_path"]) if pnr else None
+    fasm = check_dir / "top.fasm"
+    if built.get("fasm"):
+        shutil.copyfile(built["fasm"], fasm)
+    if run_path and (run_path / "nextpnr.log").is_file():
+        shutil.copyfile(run_path / "nextpnr.log", check_dir / "nextpnr.log")
+    if built.get("netlist") and built["netlist"].is_file():
+        shutil.copyfile(built["netlist"], check_dir / "top.json")
+    if run_path and (run_path / "results.json").is_file():
+        routed = json.loads((run_path / "results.json").read_text()).get("artifacts", {}).get("write")
+        if routed:
+            shutil.copyfile(run_path / routed, check_dir / "top_routed.json")
+    notes = []
+    if kind == "pass":
+        if not fasm.is_file() or fasm.stat().st_size == 0:
+            return False, "empty or missing FASM"
+        notes.append(f"{len(fasm_features(fasm))} FASM features")
+        expect = case_dir / "expect.txt"
+        if expect.is_file():
+            text = fasm.read_text()
+            missing = [p for p in expect.read_text().splitlines() if p and not re.search(p, text, re.M)]
+            if missing:
+                return False, f"FASM lacks {', '.join(missing)}"
+            notes.append("expect.txt matched")
+    check = check_dir / "check.sh"
+    if os.access(check, os.X_OK):
+        env = dict(os.environ, FASM=str(fasm), CASE_DIR=str(check_dir), CHIPDB=str(chipdb))
+        env.pop("CHIPDB_DIR", None)
+        run = subprocess.run(["bash", str(check)], env=env, capture_output=True, text=True,
+                             cwd=check_dir)
+        (check_dir / "check.log").write_text(run.stdout + run.stderr)
+        if run.returncode:
+            return False, f"check.sh failed: {(run.stdout + run.stderr).strip().splitlines()[-1:]}"
+        notes.append("check.sh passed")
+    elif kind == "expect-fail":
+        return False, "an expected-fail case without check.sh"
+    return True, "ok (" + ", ".join(notes or ["nextpnr failed as expected"]) + ")"
+
+
+def regression(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
+    """One regression case: `run.sh`'s verdict and xeda's, in both modes; repository mode must
+    give `run.sh`'s, defaults mode is reported."""
+    case_dir = design.parent
+    case = case_dir.name
+    row = Row(str(design.relative_to(HERE)), cells={"verdict": "FAILED"})
+    shared = work
+    work = work / f"regression-{case}"
+    work.mkdir(parents=True, exist_ok=True)
+    kind = regression_verdict_kind(case_dir)
+    if kind == "placed":
+        row.lines.append("placement-only case (no_route): no FASM, nothing for xeda to judge")
+        row.cells["verdict"] = "NOT JUDGED"
+        return row
+    part = regression_case_part(case_dir)
+    row.cells["part"] = part
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    chipdb = regression_chipdb(part, work, shared, env, log)
+    upstream = run_upstream_regression(case, work, chipdb, env)
+    row.lines.append(f"run.sh: {upstream['outcome']}")
+    row.cells["run.sh"] = "ok" if upstream["ok"] else "FAIL"
+    passed = True
+    for mode_ in ("repository", "defaults"):
+        built = build_xeda(design, mode_, work, shared, xeda, log, flow="nextpnr", label=mode_)
+        ok, text = judge_regression(case_dir, kind, built, work / f"check-{mode_}", chipdb)
+        same = ok == upstream["ok"]
+        row.cells[mode_] = "ok" if ok else "FAIL"
+        required = mode_ == "repository"
+        flag = "same as run.sh" if same else ("DIFFERS from run.sh" + ("" if required else " [informational]"))
+        row.lines.append(f"xeda {mode_}: {text}; {flag}")
+        theirs = upstream["case_dir"] / "top.fasm"
+        if built.get("fasm") and theirs.is_file() and theirs.stat().st_size:
+            # for information: run.sh's recipe is not the Makefile's, and is no oracle of features
+            row.lines.append(f"  fasm vs run.sh's: {compare_fasm(theirs, built['fasm'])[1]}")
+        if required and not same:
+            passed = False
+    row.passed = passed
+    row.cells["verdict"] = "same" if passed else "DIFFERENT"
+    return row
+
+
+def regression_designs(names: list[str]) -> list[Path]:
+    """The design files of the named cases, or of `run.sh`'s default cases."""
+    found = []
+    for case in names or regression_cases():
+        design = REGRESSION / case / f"{case}.yaml"
+        if not design.is_file():
+            raise SetupError(f"regression/{case} has no design file {design.name}")
+        found.append(design)
+    return found
+
+
 def designs_for(names: list[str], everything: bool) -> list[Path]:
     if everything:
         return sorted(
@@ -1860,14 +2067,18 @@ def main() -> int:
     parser.add_argument("--from-makefile-netlist", action="store_true",
                         help="xeda's nextpnr and fpga_pack on the Makefile's own netlist, against the "
                         "Makefile's FASM and bitstream (leaves synthesis out)")
+    parser.add_argument("--regression", action="store_true",
+                        help="the regression cases (`regression/run.sh`'s default list, or the named "
+                        "cases): run.sh's verdict and xeda's must be the same")
     parser.add_argument("--mode", choices=("repository", "defaults"), default="repository",
                         help="--synth-only, --twice: where xeda is started: here (xedaproject.yaml "
                         "applies) or from a directory with no project file")
     options = parser.parse_args()
-    modes = [f for f in ("qor", "ci_list", "synth_only", "twice", "from_makefile_netlist")
+    modes = [f for f in ("qor", "ci_list", "synth_only", "twice", "from_makefile_netlist", "regression")
              if getattr(options, f)]
     if len(modes) > 1:
-        parser.error("choose one of --qor, --ci-list, --synth-only, --twice, --from-makefile-netlist")
+        parser.error("choose one of --qor, --ci-list, --synth-only, --twice, --from-makefile-netlist, "
+                     "--regression")
     global REGENERATE, LITEX_PYTHON
     REGENERATE, LITEX_PYTHON = options.regenerate, options.litex_python
     # every process below inherits it: see GENERATED
@@ -1885,7 +2096,7 @@ def main() -> int:
         except SetupError as error:
             print(f"setup: {error}", file=sys.stderr)
             return 2
-    if not options.designs and not options.all and not options.twice:
+    if not options.designs and not options.all and not options.twice and not options.regression:
         parser.error("name a demo, or give --all")
     try:
         tools = check_toolchain(options.xeda)
@@ -1896,6 +2107,10 @@ def main() -> int:
                 if row.design is None:
                     raise SetupError(f"{row.name} is in upstream's determinism matrix: {row.state}")
                 designs.append(row.design)
+        elif options.regression:
+            if options.all:
+                parser.error("--regression takes case names, not --all")
+            designs = regression_designs(options.designs)
         else:
             designs = designs_for(options.designs, options.all)
     except SetupError as error:
@@ -1911,6 +2126,8 @@ def main() -> int:
         return run_sweep(options, designs, twice, ["part", "verdict"])
     if options.from_makefile_netlist:
         return run_sweep(options, designs, from_makefile_netlist, ["part", "verdict"])
+    if options.regression:
+        return run_sweep(options, designs, regression, ["part", "run.sh", "repository", "defaults", "verdict"])
 
     def log(message: str) -> None:
         print(f"  .. {message}", file=sys.stderr, flush=True)

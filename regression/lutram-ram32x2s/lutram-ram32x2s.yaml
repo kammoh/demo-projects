@@ -1,0 +1,19 @@
+# xeda design for the regression case `lutram-ram32x2s`: what `regression/run.sh lutram-ram32x2s` builds
+# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run nextpnr regression/lutram-ram32x2s/lutram-ram32x2s.yaml
+name: reg-lutram-ram32x2s
+rtl:
+  top: top
+  sources:
+    - top.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a200tfbg484-2
+    nodsp: true
+    synth_flags: [-nocarry]
+  nextpnr:
+    timing_allow_fail: true
+    write: top_routed.json

@@ -343,6 +343,72 @@ def test_the_netlist_design_has_the_makefiles_netlist_for_its_hdl(fork: Path, tm
     }
 
 
+# ---- --regression: xeda's build judged as run.sh judges its own ---------------------------------
+
+
+def test_a_regression_case_s_own_markers_give_its_verdict(tmp_path: Path) -> None:
+    for marker, kind in ((None, "pass"), ("expect_fail", "expect-fail"), ("no_route", "placed")):
+        case = tmp_path / kind
+        case.mkdir()
+        if marker:
+            (case / marker).write_text("")
+        assert xeda_check.regression_verdict_kind(case) == kind
+
+
+def regression_case(root: Path, check: str | None) -> Path:
+    """A case directory as upstream writes one: `expect.txt` and an executable `check.sh`."""
+    case = root / "case"
+    write(case / "top.v", "module top; endmodule\n")
+    write(case / "expect.txt", "BUFIO_Y[0-3]\\.IN_USE\n")
+    if check is not None:
+        write(case / "check.sh", check)
+        (case / "check.sh").chmod(0o755)
+    return case
+
+
+def built_run(root: Path, *, ok: bool, state: str, fasm: str | None, log: str = "") -> dict:
+    """What `build_xeda` returns for a `xeda run nextpnr`: its JSON document's nodes, the FASM."""
+    run = root / "run"
+    write(run / "nextpnr.log", log)
+    write(run / "results.json", "{}")
+    built: dict = {"ok": ok, "error": None if ok else "nextpnr failed",
+                   "doc": {"nodes": [{"flow": "nextpnr", "run_path": str(run), "state": state}]}}
+    if fasm is not None:
+        write(run / "config.fasm", fasm)
+        built["fasm"] = run / "config.fasm"
+    return built
+
+
+def test_the_regression_judge_has_teeth(tmp_path: Path) -> None:
+    """Each criterion of `run.sh` fails a build that misses it: an empty FASM, a pattern of
+    `expect.txt`, `check.sh`; an expected failure that succeeds, or fails before nextpnr."""
+    grep_fasm = '#!/usr/bin/env bash\ngrep -q "IN_USE" "$FASM"\n'
+    case = regression_case(tmp_path, grep_fasm)
+    good = "BUFIO_Y1.IN_USE\n"
+
+    def judge(kind: str, built: dict, case: Path = case) -> bool:
+        return xeda_check.judge_regression(case, kind, built, tmp_path / "check", tmp_path / "db.bin")[0]
+
+    assert judge("pass", built_run(tmp_path, ok=True, state="ran", fasm=good))
+    assert not judge("pass", built_run(tmp_path, ok=True, state="ran", fasm=""))
+    assert not judge("pass", built_run(tmp_path, ok=True, state="ran", fasm="BUFIO_Y7.IN_USE\n"))
+    assert not judge("pass", built_run(tmp_path, ok=False, state="failed", fasm=None))
+    failing = regression_case(tmp_path / "other", '#!/usr/bin/env bash\nexit 1\n')
+    assert not judge("pass", built_run(tmp_path, ok=True, state="ran", fasm=good), failing)
+
+    warned = regression_case(
+        tmp_path / "fails", '#!/usr/bin/env bash\ngrep -q "Conflicting" "$(dirname "$0")/nextpnr.log"\n'
+    )
+    assert judge("expect-fail", built_run(tmp_path, ok=False, state="failed", fasm=None,
+                                          log="Conflicting outputs"), warned)
+    assert not judge("expect-fail", built_run(tmp_path, ok=False, state="failed", fasm=None,
+                                              log="something else"), warned)
+    assert not judge("expect-fail", built_run(tmp_path, ok=True, state="ran", fasm=good,
+                                              log="Conflicting outputs"), warned)
+    assert not judge("expect-fail", built_run(tmp_path, ok=False, state="not run", fasm=None,
+                                              log="Conflicting outputs"), warned)
+
+
 # ---- --synth-only: yosys on both sides --------------------------------------------------------
 
 

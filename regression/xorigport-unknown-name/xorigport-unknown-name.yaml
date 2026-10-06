@@ -1,0 +1,19 @@
+# xeda design for the regression case `xorigport-unknown-name`: what `regression/run.sh xorigport-unknown-name` builds
+# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# Build it from the repository root, so that `xedaproject.yaml` is found:
+#   xeda run nextpnr regression/xorigport-unknown-name/xorigport-unknown-name.yaml
+name: reg-xorigport-unknown-name
+rtl:
+  top: top
+  sources:
+    - top.v
+    - top.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a200tfbg484-2
+    nodsp: true
+    synth_flags: [-nocarry]
+  nextpnr:
+    timing_allow_fail: true
+    write: top_routed.json
