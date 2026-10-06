@@ -62,7 +62,9 @@ The four modes above the QoR one each ask one narrower question; the design file
 
 Per-design arguments for xeda (`timing_allow_fail`, `extra_args`, `synth_flags`) are the design
 file's own; the checker adds none. The one thing it passes to `make` is `MAKE_ARGS`: picosoc's
-`BOARD=`, which its Makefile selects the part by and for which xeda has no counterpart.
+`BOARD=`, which its Makefile selects the part by and for which xeda has no counterpart, and the
+`PART=` of a design file that builds a demo for another part than its Makefile names (the Arty
+A7-100T).
 `tests/test_xeda_check.py` is the oracle of all of this: a broken design file fails each mode.
 
     python xeda_check.py --qor --all --out qor           # quality of results, not identity
@@ -102,11 +104,14 @@ HERE = Path(__file__).resolve().parent
 # loading `normbit.py` must not leave a `__pycache__` in the checkout
 sys.dont_write_bytecode = True
 
-# `make` variables a demo needs on its command line, by design file (the Makefile of `picosoc`
-# selects its part by BOARD)
+# `make` variables a demo needs on its command line, by design file: the Makefile of `picosoc`
+# selects its part by BOARD, and the Arty A7-100T is the Arty demo's Makefile with another PART
 MAKE_ARGS: dict[str, list[str]] = {
-    f"picosoc/picosoc-{board}.yaml": [f"BOARD={board}"]
-    for board in ("qmtech", "genesys2", "kx2", "hpc_420t")
+    **{
+        f"picosoc/picosoc-{board}.yaml": [f"BOARD={board}"]
+        for board in ("qmtech", "genesys2", "kx2", "hpc_420t")
+    },
+    "blinky-digilent-arty/blinky-digilent-arty-a7-100.yaml": ["PART=xc7a100tcsg324-1"],
 }
 
 # directories next to a demo that its Makefile may name (`../vexriscv/VexRiscv.v`)
@@ -635,6 +640,14 @@ def golden_verdict(demo: Path, project: str, bit: Path) -> str:
     golden = HERE / demo.name / f"{project}.bit"
     if not golden.is_file():
         return "no committed golden"
+    try:
+        theirs, ours = (parse_bitstream(p.read_bytes())[0].get("b") for p in (golden, bit))
+    except ValueError as error:
+        return f"unreadable bitstream: {error}"
+    if theirs != ours:
+        # a design file that builds the demo for another part (`MAKE_ARGS`' `PART=`)
+        part = (theirs or b"").rstrip(b"\0").decode(errors="replace")
+        return f"no committed golden for this part ({golden.name} is for {part})"
     # a `.bit` is git-ignored here, so one that is merely there is a developer's own `make` output
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", str(golden.relative_to(HERE))],
@@ -1745,6 +1758,19 @@ def twice(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
 # ---- --from-makefile-netlist ------------------------------------------------------------------
 
 
+def expand_dotted(section: dict) -> dict:
+    """A flow section with its dotted keys (`fpga.part: ...`, which xeda accepts) as nested
+    mappings, so that `fpga` is found however the design file spells it."""
+    expanded: dict = {}
+    for key, value in section.items():
+        *parents, leaf = str(key).split(".")
+        target = expanded
+        for parent in parents:
+            target = target.setdefault(parent, {})
+        target[leaf] = expand_dotted(value) if isinstance(value, dict) else value
+    return expanded
+
+
 def derive_netlist_design(design: Path, netlist: Path, out: Path) -> Path:
     """A design file that is *design*'s with the Makefile's own netlist as its only HDL: a typed
     `JsonNetlist` source and the design's constraints, and `fpga` given to `nextpnr` and
@@ -1753,7 +1779,7 @@ def derive_netlist_design(design: Path, netlist: Path, out: Path) -> Path:
     import yaml
 
     doc = load_yaml_file(design) or {}
-    flows = dict(doc.get("flows") or {})
+    flows = {name: expand_dotted(section or {}) for name, section in (doc.get("flows") or {}).items()}
     fpga = (flows.pop("yosys_fpga", None) or {}).get("fpga")
     if fpga is None:
         raise SetupError(f"{design}: `flows.yosys_fpga.fpga` names no part")
@@ -2022,7 +2048,9 @@ def designs_for(names: list[str], everything: bool) -> list[Path]:
         if path.suffix in (".yaml", ".yml"):
             found.append(path.resolve())
             continue
-        candidates = sorted((HERE / name).glob("*.yaml"))
+        # a directory is its own design file, `<dir>/<dir>.yaml`, else the one it holds
+        own = HERE / name / f"{Path(name).name}.yaml"
+        candidates = [own] if own.is_file() else sorted((HERE / name).glob("*.yaml"))
         if len(candidates) != 1:
             raise SetupError(f"{name}: {len(candidates)} design files; name one of them")
         found.append(candidates[0])

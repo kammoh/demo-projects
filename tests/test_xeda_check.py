@@ -422,6 +422,54 @@ def test_the_regression_judge_has_teeth(tmp_path: Path) -> None:
                                               log="Conflicting outputs"), warned)
 
 
+# ---- a demo with two design files: the Arty A7-35T and A7-100T -------------------------------
+
+
+def test_a_directory_is_its_own_design_file_among_others(fork: Path, monkeypatch) -> None:
+    """`xeda_check.py mini` is `mini/mini.yaml` though the directory holds another design file;
+    a directory with several and none of its own name asks for one."""
+    monkeypatch.setattr(xeda_check, "HERE", fork)
+    write(fork / "mini/mini-big.yaml", MINI_YAML.replace("name: mini", "name: mini-big"))
+    assert xeda_check.designs_for(["mini"], False) == [fork / "mini/mini.yaml"]
+    write(fork / "boards/boards-first.yaml", "name: boards-first\n")
+    with pytest.raises(xeda_check.SetupError, match="2 design files"):
+        xeda_check.designs_for(["boards"], False)
+
+
+def with_part(data: bytes, part: bytes) -> bytes:
+    """*data*, a bitstream, with the part (`b`) field of its header replaced by *part*."""
+    i = 13
+    while chr(data[i]) != "b":
+        i += 3 + int.from_bytes(data[i + 1 : i + 3], "big")
+    length = int.from_bytes(data[i + 1 : i + 3], "big")
+    return data[: i + 1] + len(part).to_bytes(2, "big") + part + data[i + 3 + length :]
+
+
+def test_the_golden_is_compared_only_with_a_build_of_its_part(tmp_path: Path) -> None:
+    """The committed `blinky.bit` of the Arty demo is the A7-35T's: an A7-100T build of the demo
+    has no golden, rather than one it differs from."""
+    demo = FORK / "blinky-digilent-arty"
+    golden = (demo / "blinky.bit").read_bytes()
+    other = tmp_path / "other.bit"
+    other.write_bytes(with_part(golden, b"7a100tcsg324\0"))
+    assert xeda_check.golden_verdict(demo, "blinky", other).startswith("no committed golden for this part")
+    same = tmp_path / "same.bit"
+    same.write_bytes(golden)
+    assert "for this part" not in xeda_check.golden_verdict(demo, "blinky", same)
+
+
+def test_a_dotted_part_reaches_the_netlist_design(tmp_path: Path) -> None:
+    """`fpga.part: ...` in a design file's `flows.yosys_fpga` is the part, as xeda reads it."""
+    import yaml
+
+    design = tmp_path / "demo/demo-big.yaml"
+    write(design, "name: demo-big\nrtl:\n  top: top\n  sources: [top.v, top.xdc]\n"
+                  "flows:\n  yosys_fpga:\n    fpga.part: xc7a100tcsg324-1\n")
+    derived = yaml.safe_load(xeda_check.derive_netlist_design(design, tmp_path / "n.json", tmp_path / "out").read_text())
+    part = {"part": "xc7a100tcsg324-1"}
+    assert derived["flows"] == {"nextpnr": {"fpga": part}, "fpga_pack": {"fpga": part}}
+
+
 # ---- --synth-only: yosys on both sides --------------------------------------------------------
 
 
