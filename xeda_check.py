@@ -1461,7 +1461,7 @@ def run_ci_list() -> int:
 
     def label(row: CiRow) -> str:
         # a job's `BOARD` matters only to the project whose design file is named after it (picosoc)
-        board = row.board and row.design and row.design.stem.endswith(f"-{row.board}")
+        board = row.board and row.design and row.design.stem == f"{Path(row.name).name}-{row.board}"
         return ", ".join(row.where) + (f" (BOARD={row.board})" if board else "")
 
     width = max(len(r.name) for r in rows)
