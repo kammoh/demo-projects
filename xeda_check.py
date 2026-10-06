@@ -462,6 +462,13 @@ def golden_verdict(demo: Path, project: str, bit: Path) -> str:
     golden = HERE / demo.name / f"{project}.bit"
     if not golden.is_file():
         return "no committed golden"
+    # a `.bit` is git-ignored here, so one that is merely there is a developer's own `make` output
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(golden.relative_to(HERE))],
+        cwd=HERE, capture_output=True,
+    )
+    if tracked.returncode:
+        return f"no committed golden ({golden.name} is in {demo.name}/ but not tracked by git)"
     spec = importlib.util.spec_from_file_location("normbit", HERE / ".github/scripts/normbit.py")
     assert spec and spec.loader
     normbit = importlib.util.module_from_spec(spec)
