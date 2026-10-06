@@ -5,6 +5,7 @@
     python xeda_check.py blinky-digilent-arty            # a demo with one design file
     python xeda_check.py picosoc/picosoc-kx2.yaml        # or a design file
     python xeda_check.py --all                           # every demo that has a design file
+    python xeda_check.py --regenerate hdmi-stlv7325      # run a demo's generator (LiteX) again
 
 For each design this runs two builds and compares what they write:
 
@@ -68,21 +69,22 @@ LIBRARY_DIRECTORIES = ("vexriscv", "vexriscv_smp", "serv")
 
 TOOLS = ("yosys", "nextpnr-himbaechel", "nextpnr-xilinx", "fpga-as")
 
-# Inputs a demo's committed files lack because upstream ignores and does not track them, with the
-# command that makes them (run in the demo's directory, into a scratch directory). `hdmi-stlv7325`
-# reads `hdmi_demo_mem.init` (LiteX's SoC identifier string, with the build date in it) and
-# upstream's `.gitignore` has `*.init`; the Makefile does not run LiteX. Generated once into the
-# checkout (ignored by git there, as upstream intends), never replaced unless `--regenerate`.
+# Inputs a demo's committed files lack because they are generated, not tracked: the netlist of
+# `hdmi-stlv7325` is made by LiteX (`hdmi_demo.py`), which is what both routes build. Its design
+# file declares the command (`rtl.generator`: `args`, `generated_sources`) and this table names
+# the design file, so that the checker runs the declared command and cannot drift from it. The
+# command runs in the demo's directory (output into its git-ignored `build/`, where xeda writes
+# too) when a generated file is missing or with `--regenerate`, and the files go into the scratch
+# export the Makefile builds in, at the same relative paths.
+#
+# LiteX stamps the build date into the Verilog and into the ROM image, so two generations differ
+# unless the date is pinned: `SOURCE_DATE_EPOCH` is, for every process the checker starts (the
+# Makefile's, xeda's and its generator, which inherits it). Without it the routes would build
+# two different ROMs and the FASM comparison would be void.
+GENERATED = {"hdmi-stlv7325": "hdmi-stlv7325.yaml"}
+GENERATOR_EPOCH = "1767225600"
 REGENERATE = False  # `--regenerate`: make the generated inputs again
-GENERATED = {
-    "hdmi-stlv7325": {
-        "script": "hdmi_demo.py",
-        "args": ["--build", "--no-compile-gateware"],
-        "files": {"gateware/sitlinv_stlv7325_v2_mem.init": "hdmi_demo_mem.init"},
-    },
-}
-
-
+LITEX_PYTHON: str | None = None  # `--litex-python`
 class SetupError(Exception):
     pass
 
@@ -123,29 +125,70 @@ def litex_python(given: str | None) -> str:
     return candidate
 
 
-def generate_inputs(demo: Path, work: Path, python: str | None, regenerate: bool, log) -> list[Path]:
-    """Make the demo's generated inputs that are missing (or all, with *regenerate*) with LiteX, into
-    the demo directory; returns the files the demo has now."""
-    spec = GENERATED.get(demo.name)
+def generator_spec(demo: Path) -> dict | None:
+    """What `rtl.generator` of the demo's design file declares: the program's arguments (run in
+    the demo's directory) and the files it generates, relative to it. None for a demo that has no
+    generated input."""
+    name = GENERATED.get(demo.name)
+    if name is None:
+        return None
+    import yaml  # not needed by a demo without generated inputs
+
+    generator = ((yaml.safe_load((demo / name).read_text()) or {}).get("rtl") or {}).get("generator")
+    if not isinstance(generator, dict) or "executable" not in generator:
+        raise SetupError(f"{demo / name} has no `rtl.generator` with an `executable` and `args`")
+    return {
+        "executable": generator["executable"],
+        "args": [str(a) for a in generator.get("args", [])],
+        "files": [str(f) for f in generator.get("generated_sources", [])],
+    }
+
+
+def litex_shim(spec: dict, python: str | None, work: Path) -> dict[str, str]:
+    """The environment for a process that runs the generator by the name the design gives it
+    (`python3`): `PATH` leads with a directory whose `python3` is the interpreter that imports LiteX.
+    openXC7's `export.sh` puts its own venv's `python3` first, which has no LiteX. A wrapper, not a
+    link: a venv's `python` finds its packages beside the path it was started by."""
+    executable = Path(spec["executable"])
+    if executable.parent != Path("."):
+        return {}
+    shim = work / "litex-bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    wrapper = shim / executable.name
+    wrapper.write_text(f'#!/bin/sh\nexec "{litex_python(python)}" "$@"\n')
+    wrapper.chmod(0o755)
+    return {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+
+
+def generate_inputs(demo: Path, work: Path, python: str | None, regenerate: bool, log) -> list[str]:
+    """Make the demo's generated inputs that are missing (or all, with *regenerate*) by running
+    its design file's generator in the demo's directory; returns their paths relative to it."""
+    spec = generator_spec(demo)
     if spec is None:
         return []
-    wanted = {demo / name: dest for name, dest in spec["files"].items()}
-    targets = [demo / dest for dest in spec["files"].values()]
-    if regenerate or not all(t.exists() for t in targets):
-        out = work / "litex"
-        shutil.rmtree(out, ignore_errors=True)
-        command = [litex_python(python), spec["script"], *spec["args"], "--output-dir", str(out)]
-        log(f"generating {', '.join(t.name for t in targets)}: {' '.join(command)}")
-        run = subprocess.run(
-            command, cwd=demo, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
-            capture_output=True, text=True,
-        )
+    if regenerate or not all((demo / f).exists() for f in spec["files"]):
+        command = [spec["executable"], *spec["args"]]
+        log(f"generating {', '.join(spec['files'])}: {' '.join(command)}")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", **litex_shim(spec, python, work))
+        run = subprocess.run(command, cwd=demo, env=env, capture_output=True, text=True)
         (work / "litex.log").write_text(run.stdout + run.stderr)
         if run.returncode:
-            raise SetupError(f"LiteX failed ({run.returncode}); see {work / 'litex.log'}")
-        for name, dest in spec["files"].items():
-            shutil.copyfile(out / name, demo / dest)
-    return targets
+            raise SetupError(f"the generator failed ({run.returncode}); see {work / 'litex.log'}")
+        missing = [f for f in spec["files"] if not (demo / f).exists()]
+        if missing:
+            raise SetupError(f"the generator did not write {', '.join(missing)}")
+    return spec["files"]
+
+
+def generated_differ(demo: Path, scratch: Path) -> list[str]:
+    """The generated inputs that are not what the Makefile's build was given: xeda generates them
+    again on every run (`--clean`), so an input made under another `SOURCE_DATE_EPOCH` (or by hand
+    since) leaves the two routes with different netlists, and a comparison of them means nothing."""
+    spec = generator_spec(demo)
+    return [
+        f for f in (spec["files"] if spec else [])
+        if (demo / f).read_bytes() != (scratch / f).read_bytes()
+    ]
 
 
 def export_tree(demo: Path, work: Path) -> Path:
@@ -162,9 +205,10 @@ def export_tree(demo: Path, work: Path) -> Path:
     ).stdout
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(target, filter="data")
-    # inputs upstream ignores and the demo needs (made once, in the checkout): not in the archive
-    for path in generate_inputs(demo, work, None, REGENERATE, print):
-        shutil.copyfile(path, target / demo.name / path.name)
+    # inputs that are generated, not tracked (made once, in the checkout): not in the archive
+    for name in generate_inputs(demo, work, LITEX_PYTHON, REGENERATE, print):
+        (target / demo.name / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(demo / name, target / demo.name / name)
     return target / demo.name
 
 
@@ -288,7 +332,9 @@ def build_xeda(
         *extra,
     ]
     log(f"xeda ({mode}): {' '.join(cmd)}  (from {cwd})")
-    run = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    spec = generator_spec(design.parent)
+    env = dict(os.environ, **(litex_shim(spec, LITEX_PYTHON, work) if spec else {}))
+    run = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
     (work / f"xeda-{mode}.log").write_text(run.stderr)
     try:
         doc = json.loads(run.stdout)
@@ -457,6 +503,13 @@ def check_design(design: Path, work: Path, xeda: str, log) -> Verdict:
         verdict.lines.append("          golden: " + golden_verdict(demo, project, ours["bit"]))
         if required and not (same_fasm and same_bit):
             passed = False
+    differ = generated_differ(demo, upstream["scratch"])
+    if differ:
+        verdict.lines.append(
+            f"generated inputs: FAIL: {', '.join(differ)} is not what the Makefile built from; "
+            "the two routes built different netlists (run with --regenerate)"
+        )
+        passed = False
     verdict.passed = passed
     return verdict
 
@@ -1027,6 +1080,14 @@ def qor_design(
             ours["placed"]["clocks"] = sweep_clocks(sweeps[mode])
         ours.pop("netlist")
         row["modes"][mode] = {**ours, **compare_qor(baseline, ours, tolerance, band, base['pnr_args'])}
+        differ = generated_differ(demo, base["scratch"])
+        if differ:
+            # xeda generated its inputs again (`--clean`) and they are not the baseline's
+            row["modes"][mode]["verdict"] = "not comparable"
+            row["modes"][mode]["notes"] = (
+                f"{', '.join(differ)} is not what the baseline built from: different netlists "
+                f"(run with --regenerate); " + row["modes"][mode]["notes"]
+            )
     return row
 
 
@@ -1170,6 +1231,10 @@ def main() -> int:
         help="scratch directory (git-ignored); keeps the chip databases",
     )
     parser.add_argument("--xeda", default="xeda", help="the xeda executable")
+    parser.add_argument("--regenerate", action="store_true",
+                        help="run the generator of a demo with generated inputs, though they exist")
+    parser.add_argument("--litex-python", metavar="PYTHON",
+                        help="the interpreter that imports LiteX (default: $LITEX_PYTHON, else this one)")
     parser.add_argument("--qor", action="store_true", help="compare area and timing, not identity")
     parser.add_argument("--modes", default="defaults", help="--qor: xeda's modes, comma-separated")
     parser.add_argument("--seeds", type=int, default=0, help="--qor: nextpnr seeds per netlist")
@@ -1183,6 +1248,10 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=1, help="--qor: designs built at once")
     parser.add_argument("--out", default="qor", help="--qor: write <out>.json and <out>.csv")
     options = parser.parse_args()
+    global REGENERATE, LITEX_PYTHON
+    REGENERATE, LITEX_PYTHON = options.regenerate, options.litex_python
+    # every process below inherits it: see GENERATED
+    os.environ.setdefault("SOURCE_DATE_EPOCH", GENERATOR_EPOCH)
     if options.rejudge:
         rows = rejudge(json.loads(Path(options.rejudge).read_text()), options.tolerance)
         Path(options.out).with_suffix(".json").write_text(json.dumps(rows, indent=1, default=str))

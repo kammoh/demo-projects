@@ -28,8 +28,12 @@
 # two sources there, among them its own `sitlinv_stlv7325_v2.xdc`. That one is not used: the
 # design's constraints are `hdmi_demo.xdc`, hand-maintained for openXC7 (its Vivado-only
 # properties and some false paths are commented out), and generating beside it would overwrite it.
-# `hdmi_demo.v` and `hdmi_demo_mem.init` here are the 2023 files that `make` builds; xeda does not
-# read them.
+#
+# `make` builds the same two files (`hdmi-stlv7325/Makefile` names them), with `hdmi_demo.xdc` too, but
+# does not run LiteX: it stops, naming the command, when they are absent. There is no checked-in
+# netlist. LiteX stamps its build date into both files (the ROM image included), so a netlist made
+# by one route is not byte-identical to another generation's; `SOURCE_DATE_EPOCH` pins the date
+# (LiteX honors it), which `xeda_check.py` sets so that both routes build one design.
 name: hdmi-stlv7325
 description: Colorbars on HDMI (TMDS_33) on the STLV7325-v2, a LiteX SoC without a CPU
 rtl:
