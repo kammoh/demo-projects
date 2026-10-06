@@ -276,6 +276,48 @@ def test_the_bitstream_comparison_has_teeth() -> None:
     assert compared(bytes(redated))
 
 
+def test_a_rebuilt_toolchain_gets_chip_databases_of_its_own(tmp_path: Path, monkeypatch) -> None:
+    """The Makefile side's chip databases are kept by toolchain: a changed nextpnr, bbasm,
+    generator or Project X-Ray file names another directory, so a database made by an older
+    toolchain is never placed with by a newer one."""
+    prefix = tmp_path / "openxc7"
+    files = {
+        "bin/nextpnr-himbaechel": "nextpnr 1",
+        "bin/bbasm": "bbasm 1",
+        "share/nextpnr/himbaechel/uarch/xilinx/gen/xilinx_gen.py": "gen 1",
+        "prjxray-db/artix7/tilegrid.json": "grid 1",
+        "prjxray-db/kintex7/tilegrid.json": "grid 1",
+    }
+    for name, text in files.items():
+        write(prefix / name, text)
+    env = {
+        "NEXTPNR_XILINX_DIR": str(prefix),
+        "PRJXRAY_DB_DIR": str(prefix / "prjxray-db"),
+        "PATH": str(prefix / "bin"),
+    }
+    (prefix / "bin/nextpnr-himbaechel").chmod(0o755)
+
+    def directory(family: str = "artix7") -> Path:
+        monkeypatch.setattr(xeda_check, "_TOOLCHAIN_IDS", {})
+        return xeda_check.chipdb_directory(tmp_path / "w", family, env)
+
+    first = directory()
+    assert first.parent == tmp_path / "w/chipdb" and first.name.startswith("artix7-")
+    assert directory() == first
+    assert directory("kintex7").name.startswith("kintex7-")
+    seen = {first}
+    for name in ("bin/nextpnr-himbaechel", "bin/bbasm",
+                 "share/nextpnr/himbaechel/uarch/xilinx/gen/xilinx_gen.py",
+                 "prjxray-db/artix7/tilegrid.json"):
+        (prefix / name).write_text(files[name] + " rebuilt")
+        changed = directory()
+        assert changed not in seen, name
+        seen.add(changed)
+    # another family's data is not this family's chip database
+    (prefix / "prjxray-db/kintex7/tilegrid.json").write_text("grid 2")
+    assert directory() in seen
+
+
 def test_the_netlist_design_has_the_makefiles_netlist_for_its_hdl(fork: Path, tmp_path: Path) -> None:
     import yaml
 

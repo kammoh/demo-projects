@@ -325,9 +325,52 @@ def make_variables(directory: Path, env: dict[str, str], args: list[str]) -> dic
     return values
 
 
+def _digest_tree(digest, root: Path) -> None:
+    """Every file under *root*, by its path relative to it and its content, in a fixed order."""
+    import hashlib
+
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(str(path.relative_to(root)).encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+
+
+_TOOLCHAIN_IDS: dict[str, str] = {}
+
+
+def toolchain_identity(family: str, env: dict[str, str]) -> str:
+    """What the Makefile's chip database of a *family* is made from, as a digest: the content of
+    `nextpnr-himbaechel` (which reads the database), `bbasm` and the generator tree (which write
+    it) and the family's Project X-Ray data. A chip database made by another toolchain is never
+    reused: the two sides of a check must place with databases of the same toolchain (xeda's
+    cache key hashes the same inputs)."""
+    import hashlib
+
+    if family in _TOOLCHAIN_IDS:
+        return _TOOLCHAIN_IDS[family]
+    prefix = Path(env["NEXTPNR_XILINX_DIR"])
+    nextpnr = shutil.which("nextpnr-himbaechel", path=env.get("PATH"))
+    if nextpnr is None:
+        raise SetupError("`nextpnr-himbaechel` is not on PATH")
+    digest = hashlib.sha256()
+    for path in (Path(nextpnr).resolve(), prefix / "bin" / "bbasm"):
+        digest.update(path.name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    _digest_tree(digest, prefix / "share" / "nextpnr" / "himbaechel")
+    _digest_tree(digest, Path(env["PRJXRAY_DB_DIR"]) / family)
+    _TOOLCHAIN_IDS[family] = digest.hexdigest()[:16]
+    return _TOOLCHAIN_IDS[family]
+
+
+def chipdb_directory(shared: Path, family: str, env: dict[str, str]) -> Path:
+    """The Makefile's chip databases of *family* for the toolchain on PATH: one directory per
+    toolchain identity, so a rebuilt toolchain generates its own."""
+    return shared / "chipdb" / f"{family}-{toolchain_identity(family, env)}"
+
+
 def chipdb_ready(scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], log) -> None:
     """Have the Makefile's own rule generate the part's chip database, once at a time: two checks
-    of one part must not both write `<part>.bin` while the other reads it."""
+    of one part must not both write `<part>.bin` while the other reads it. The cost of the
+    generation (`/usr/bin/time -l`: wall time and the largest process's peak memory) is kept
+    beside the database as `<part>.cost`."""
     import fcntl
 
     target = chipdb / f"{dbpart}.bin"
@@ -335,11 +378,26 @@ def chipdb_ready(scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], 
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not target.is_file():
             log(f"upstream: generating {target}")
+            timer = ["/usr/bin/time", "-l"] if Path("/usr/bin/time").is_file() else []
             run = subprocess.run(
-                ["make", "-C", str(scratch), str(target)], env=env, capture_output=True, text=True
+                [*timer, "make", "-C", str(scratch), str(target)],
+                env=env, capture_output=True, text=True,
             )
             if run.returncode:
                 raise SetupError(f"chip database {target}: {run.stderr[-500:]}")
+            cost = generation_cost(run.stderr)
+            if cost:
+                (chipdb / f"{dbpart}.cost").write_text(cost + "\n")
+                log(f"upstream: generated {target}: {cost}")
+
+
+def generation_cost(stderr: str) -> str:
+    """Wall time and peak memory from `/usr/bin/time -l`'s report (macOS), or nothing."""
+    real = re.search(r"([\d.]+) real", stderr)
+    peak = re.search(r"(\d+)\s+maximum resident set size", stderr)
+    if not (real and peak):
+        return ""
+    return f"{float(real[1]):.0f} s, peak {int(peak[1]) / 2**30:.1f} GiB (largest process)"
 
 
 def prepare_upstream(demo: Path, work: Path, args: list[str]) -> tuple[Path, dict, dict]:
@@ -380,7 +438,7 @@ def build_upstream(
     scratch, env, variables = prepare_upstream(demo, work, args)
     project, family = variables["PROJECT"], variables["FAMILY"]
     # one chip database cache for all checks, which the Makefile fills the way it always does
-    chipdb = shared / "chipdb" / family
+    chipdb = chipdb_directory(shared, family, env)
     chipdb.mkdir(parents=True, exist_ok=True)
     env[f"{family.upper()}_CHIPDB"] = str(chipdb)
     chipdb_ready(scratch, chipdb, variables["DBPART"], env, log)
