@@ -148,20 +148,48 @@ def generator_spec(demo: Path) -> dict | None:
     }
 
 
+# the environment variables a design file's `rtl.generator.sources` names LiteX's packages by
+# (`hdmi-stlv7325.yaml`): the directory of each package the interpreter imports
+LITEX_PACKAGE_VARIABLES = {
+    "LITEX_DIR": "litex",
+    "LITEX_BOARDS_DIR": "litex_boards",
+    "MIGEN_DIR": "migen",
+}
+
+
+def litex_package_dirs(python: str) -> dict[str, str]:
+    """`LITEX_PACKAGE_VARIABLES` set to where *python* imports each package from: an editable
+    clone or its `site-packages`, whichever it is, so that xeda judges the files the generator
+    reads."""
+    code = (
+        "import importlib, os\n"
+        "for var, name in " + repr(sorted(LITEX_PACKAGE_VARIABLES.items())) + ":\n"
+        "    print(var, os.path.dirname(importlib.import_module(name).__file__), sep='=')\n"
+    )
+    probe = subprocess.run([python, "-c", code], cwd="/", capture_output=True, text=True)
+    if probe.returncode:
+        raise SetupError(f"{python} does not import litex, litex_boards and migen: {probe.stderr}")
+    return dict(line.split("=", 1) for line in probe.stdout.splitlines())
+
+
 def litex_shim(spec: dict, python: str | None, work: Path) -> dict[str, str]:
     """The environment for a process that runs the generator by the name the design gives it
     (`python3`): `PATH` leads with a directory whose `python3` is the interpreter that imports LiteX.
     openXC7's `export.sh` puts its own venv's `python3` first, which has no LiteX. A wrapper, not a
-    link: a venv's `python` finds its packages beside the path it was started by."""
+    link: a venv's `python` finds its packages beside the path it was started by. The same
+    interpreter's package directories (`litex_package_dirs`) are set too, for the design's
+    `rtl.generator.sources`."""
+    interpreter = litex_python(python)
+    env = litex_package_dirs(interpreter)
     executable = Path(spec["executable"])
     if executable.parent != Path("."):
-        return {}
+        return env
     shim = work / "litex-bin"
     shim.mkdir(parents=True, exist_ok=True)
     wrapper = shim / executable.name
-    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(litex_python(python))} "$@"\n')
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(interpreter)} "$@"\n')
     wrapper.chmod(0o755)
-    return {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+    return {**env, "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
 
 
 def generate_inputs(demo: Path, work: Path, python: str | None, regenerate: bool, log) -> list[str]:

@@ -4,15 +4,33 @@
 #
 # The Verilog is not checked in for this design: `rtl.generator` runs `hdmi_demo.py` (LiteX) when
 # the design is loaded, and runs it again only when something it reads changed, judged by content:
-#   - `sources`: the script itself;
-#   - `packages`: the installed Python packages the script reaches, which no design can list as
-#     files. They are the LiteX ones in `sys.modules` after a real `hdmi_demo.py --build`:
-#       litex         the SoC, the builder and the Verilog back end
-#       litex_boards  `platforms/sitlinv_stlv7325_v2`, the board's pins and constraints
-#       migen         the HDL it is all written in
+#   - `sources`: the script itself, and the LiteX packages it imports. They are the ones in
+#     `sys.modules` after a real `hdmi_demo.py --build`, named as directories (a directory counts
+#     as every file in it):
+#       litex         $LITEX_DIR         the SoC, the builder and the Verilog back end
+#       litex_boards  $LITEX_BOARDS_DIR  `platforms/sitlinv_stlv7325_v2`, the board's pins and
+#                                        constraints
+#       migen         $MIGEN_DIR         the HDL it is all written in
 #     No CPU is selected, so no `pythondata_cpu_*` core and none of the other LiteX cores
 #     (`litedram`, `liteeth`, ...) is imported. `colorama` and `packaging` are loaded too; they
-#     are general-purpose third-party packages, not LiteX, and are not listed.
+#     are general-purpose third-party packages, not LiteX, and are not named.
+#     Where those directories are depends on how LiteX was installed (an editable clone for
+#     `litex` and `litex_boards`, a copy in the virtual environment's `site-packages` for a
+#     `pip install migen`), so no relative or absolute spelling holds on another machine:
+#     xeda expands environment variables in these paths, from its own environment, and the
+#     three are the package directories of the interpreter the generator runs (`python3` on its
+#     `PATH`). Set them before `xeda run`:
+#       eval "$(python3 - <<'PY'
+#       import os, shlex, litex, litex_boards, migen
+#       for var, pkg in ("LITEX_DIR", litex), ("LITEX_BOARDS_DIR", litex_boards), ("MIGEN_DIR", migen):
+#           print(f"export {var}={shlex.quote(os.path.dirname(pkg.__file__))}")
+#       PY
+#       )"
+#     `xeda_check.py` does that itself for the interpreter it gives the generator. A variable that
+#     is not set leaves its path unexpanded, which xeda refuses at load: no such file. Xeda cannot
+#     see which copy of a package the interpreter imports, so a package reinstalled from other
+#     sources, or another interpreter, changes the design without changing what is named here:
+#     `xeda run --rebuild-all` is for that.
 # `xeda run --rebuild-all` generates again regardless. A load with no run root to keep a record
 # in (a `Design` built by hand) cannot judge it and generates; `xeda run --dry-run` refuses to
 # plan a design that has to generate, and creates nothing.
@@ -42,8 +60,7 @@ rtl:
   generator:
     executable: python3
     args: ["hdmi_demo.py", "--build", "--no-compile-gateware", "--output-dir", "build"]
-    sources: ["hdmi_demo.py"]
-    packages: ["litex", "litex_boards", "migen"]
+    sources: ["hdmi_demo.py", "$LITEX_DIR", "$LITEX_BOARDS_DIR", "$MIGEN_DIR"]
     generated_sources:
       - "build/gateware/sitlinv_stlv7325_v2.v"
       - "build/gateware/sitlinv_stlv7325_v2_mem.init"
