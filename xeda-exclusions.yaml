@@ -1,0 +1,15 @@
+# Projects that upstream's CI builds and this fork does not build through xeda, each with the
+# reason (and, if there is one, the evidence). `xeda_check.py --ci-list` reads this file: a
+# project in upstream's workflows with neither a design file nor an entry here is `missing` and
+# fails the list. An entry for a project upstream does not build, or for one that also has a
+# design file, is an error too.
+#
+# Names are the directories upstream's workflows build (`picosoc`) or `regression/<case>`:
+#
+#   excluded:
+#     regression/bufr-pad-site:
+#       reason: placement-only case, no FASM for xeda's nextpnr to deliver
+#       evidence: regression/bufr-pad-site/no_route
+#
+# Nothing is excluded yet.
+excluded: {}

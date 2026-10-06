@@ -6,6 +6,10 @@
     python xeda_check.py picosoc/picosoc-kx2.yaml        # or a design file
     python xeda_check.py --all                           # every demo that has a design file
     python xeda_check.py --regenerate hdmi-stlv7325      # run a demo's generator (LiteX) again
+    python xeda_check.py --ci-list                       # which of upstream's CI projects lack a design
+    python xeda_check.py --synth-only --all --jobs 3     # yosys on both sides, minutes, no chip database
+    python xeda_check.py --twice blinky-digilent-arty    # two clean xeda builds, bitstreams equal
+    python xeda_check.py --from-makefile-netlist picosoc/picosoc-kx2.yaml   # xeda's P&R on the Makefile's netlist
 
 For each design this runs two builds and compares what they write:
 
@@ -21,6 +25,37 @@ Defaults mode must build; a difference there is reported, not failed. The commit
 (if any) is compared the way upstream CI does, through `.github/scripts/normbit.py`, for
 information. Exit status 0 when every checked design passes, 1 when one does not, 2 on a setup
 error (a tool that is not openXC7's, xeda not found). Nothing here programs a device.
+
+The four modes above the QoR one each ask one narrower question; the design file is the same.
+
+  --ci-list              builds nothing. Reads `.github/workflows/smoke.yml` and `heavy.yml` (the
+                         project matrix, the determinism matrix, the regression job, whose cases are
+                         the default list of `regression/run.sh`) and prints every project with its
+                         state: `design file`, `excluded: <reason>` (`xeda-exclusions.yaml`) or
+                         `missing`. A job's `BOARD` picks picosoc's design file (`picosoc-kx2.yaml`).
+                         Exit 1 on a `missing` project, on a project that is both excluded and has a
+                         design file, 2 on an exclusion naming a project upstream does not build.
+  --synth-only           yosys on both sides and no chip database: `make <project>.json` in the
+                         scratch export, and `xeda run yosys_fpga` (`--mode`: repository, the default,
+                         or defaults); the cell-type counts of the two netlists must be equal, and the
+                         design file must agree with the Makefile on part, top module, every HDL
+                         source (in the Makefile's order) and the constraints file, as xeda resolved
+                         them. Minutes for every design file (`--all --jobs 3`).
+  --twice                two clean xeda builds of the design, FASM features and bitstream (but for the
+                         header's date and time) equal: upstream's determinism job, on xeda. With no
+                         design, the projects of upstream's determinism matrix. A design that
+                         disagrees with the Makefile (as in --synth-only) is refused before a build:
+                         determinism of the wrong design says nothing.
+  --from-makefile-netlist  xeda's `nextpnr` and `fpga_pack` on the Makefile's own netlist (a derived
+                         design file: a typed `JsonNetlist` source, the design's constraints and
+                         `fpga` given to both flows), compared with the Makefile's FASM and bitstream.
+                         It leaves synthesis out: a design that fails the normal check and passes
+                         this one differs from the Makefile in synthesis alone.
+
+Per-design arguments for xeda (`timing_allow_fail`, `extra_args`, `synth_flags`) are the design
+file's own; the checker adds none. The one thing it passes to `make` is `MAKE_ARGS`: picosoc's
+`BOARD=`, which its Makefile selects the part by and for which xeda has no counterpart.
+`tests/test_xeda_check.py` is the oracle of all of this: a broken design file fails each mode.
 
     python xeda_check.py --qor --all --out qor           # quality of results, not identity
 
@@ -40,6 +75,7 @@ established here; no hardware is involved.
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.util
 import io
 import json
@@ -306,24 +342,48 @@ def chipdb_ready(scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], 
                 raise SetupError(f"chip database {target}: {run.stderr[-500:]}")
 
 
+def prepare_upstream(demo: Path, work: Path, args: list[str]) -> tuple[Path, dict, dict]:
+    """The scratch export of *demo*, the environment its Makefile runs in, and the variables the
+    Makefile evaluates to (with *args* given). Every output of the committed tree is deleted:
+    make would take a tracked one (`blinky.json`) for an up-to-date target."""
+    scratch = export_tree(demo, work)
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    variables = make_variables(scratch, env, args)
+    for suffix in ("json", "fasm", "bit", "frames"):
+        (scratch / f"{variables['PROJECT']}.{suffix}").unlink(missing_ok=True)
+    return scratch, env, variables
+
+
+def build_upstream_netlist(demo: Path, work: Path, args: list[str], log) -> dict:
+    """The Makefile's synthesis alone (`make <project>.json`): yosys's netlist, no chip database."""
+    scratch, env, variables = prepare_upstream(demo, work, args)
+    netlist = scratch / f"{variables['PROJECT']}.json"
+    cmd = ["make", "-C", str(scratch), netlist.name, *args]
+    log(f"upstream: {' '.join(cmd)}")
+    run = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    (work / "upstream.log").write_text(run.stdout + run.stderr)
+    ok = run.returncode == 0 and netlist.is_file()
+    return {
+        "ok": ok,
+        "netlist": netlist,
+        "scratch": scratch,
+        "variables": variables,
+        "error": None if ok else f"make exited {run.returncode}; see {work / 'upstream.log'}",
+    }
+
+
 def build_upstream(
     demo: Path, work: Path, shared: Path, args: list[str], log, placement: bool = False
 ) -> dict:
     """The Makefile's build. With *placement*, nextpnr also writes its placement dump
     (`-o placement=`, which xeda always passes too): the physical LUTs are counted from it."""
-    scratch = export_tree(demo, work)
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    variables = make_variables(scratch, env, args)
+    scratch, env, variables = prepare_upstream(demo, work, args)
     project, family = variables["PROJECT"], variables["FAMILY"]
-    # every output of the committed tree goes: make would take a tracked one for up to date
-    for suffix in ("json", "fasm", "bit", "frames"):
-        (scratch / f"{project}.{suffix}").unlink(missing_ok=True)
     # one chip database cache for all checks, which the Makefile fills the way it always does
     chipdb = shared / "chipdb" / family
     chipdb.mkdir(parents=True, exist_ok=True)
     env[f"{family.upper()}_CHIPDB"] = str(chipdb)
-    if placement:
-        chipdb_ready(scratch, chipdb, variables["DBPART"], env, log)
+    chipdb_ready(scratch, chipdb, variables["DBPART"], env, log)
     cmd = ["make", "-C", str(scratch), *args]
     dump = scratch / "placement.json"
     if placement:
@@ -355,17 +415,26 @@ def build_upstream(
 
 
 def build_xeda(
-    design: Path, mode: str, work: Path, shared: Path, xeda: str, log, extra: tuple[str, ...] = ()
+    design: Path,
+    mode: str,
+    work: Path,
+    shared: Path,
+    xeda: str,
+    log,
+    extra: tuple[str, ...] = (),
+    flow: str = "fpga_pack",
+    label: str | None = None,
 ) -> dict:
-    """`xeda run fpga_pack --json`, from here ("repository": the project file is found) or
-    from an empty directory ("defaults"). One run root for every check, whose chip databases they
-    share; the run directories of the two modes are told apart by the settings hash."""
+    """`xeda run <flow> --json`, from here ("repository": the project file is found) or from an
+    empty directory ("defaults"). One run root for every check, whose chip databases they share;
+    the run directories of the two modes are told apart by the settings hash. *label* names the
+    log when one design is built more than once (`--twice`)."""
     cwd = HERE if mode == "repository" else work / "no-project-file"
     cwd.mkdir(parents=True, exist_ok=True)
     cmd = [
         xeda,
         "run",
-        "fpga_pack",
+        flow,
         str(design),
         "--json",
         "--clean",
@@ -378,14 +447,14 @@ def build_xeda(
     spec = generator_spec(design.parent)
     env = dict(os.environ, **(litex_shim(spec, LITEX_PYTHON, work) if spec else {}))
     run = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
-    (work / f"xeda-{mode}.log").write_text(run.stderr)
+    log_file = work / f"xeda-{label or mode}.log"
+    log_file.write_text(run.stderr)
     try:
         doc = json.loads(run.stdout)
     except json.JSONDecodeError:
         return {
             "ok": False,
-            "error": f"no JSON on stdout (exit {run.returncode}); see "
-            f"{work / f'xeda-{mode}.log'}",
+            "error": f"no JSON on stdout (exit {run.returncode}); see {log_file}",
         }
     if not doc.get("success"):
         error = doc.get("error") or {}
@@ -395,20 +464,23 @@ def build_xeda(
                 f"{error.get('type')}: {error.get('message')}"
                 if error
                 else "the run failed; see its results.json"
-            ),
+            ) + f" (see {log_file})",
             "doc": doc,
         }
-    nextpnr = next(n for n in doc["nodes"] if n["flow"] == "nextpnr")
-    routed = json.loads((Path(nextpnr["run_path"]) / "results.json").read_text())
-    return {
-        "ok": True,
-        "doc": doc,
-        "bit": Path(doc["results"]["outputs"]["bitstream"]["path"]),
-        "fasm": Path(routed["outputs"]["config"]["path"]),
-        "nodes": {n["flow"]: Path(n["run_path"]) for n in doc["nodes"]},
-        "device": routed.get("device"),
-        "fabric": routed.get("fabric"),
-    }
+    nodes = {n["flow"]: Path(n["run_path"]) for n in doc["nodes"]}
+    built: dict = {"ok": True, "doc": doc, "nodes": nodes}
+    if "yosys_fpga" in nodes:
+        built["netlist"] = nodes["yosys_fpga"] / "netlist.json"
+    if "nextpnr" in nodes:
+        routed = json.loads((nodes["nextpnr"] / "results.json").read_text())
+        built.update(
+            fasm=Path(routed["outputs"]["config"]["path"]),
+            device=routed.get("device"),
+            fabric=routed.get("fabric"),
+        )
+    if flow == "fpga_pack":
+        built["bit"] = Path(doc["results"]["outputs"]["bitstream"]["path"])
+    return built
 
 
 # ---- the comparison -----------------------------------------------------------------------
@@ -466,9 +538,13 @@ def parse_bitstream(data: bytes) -> tuple[dict[str, bytes], int, bytes]:
 
 
 def compare_bitstreams(upstream: Path, ours: Path) -> tuple[bool, str]:
+    return compare_bitstreams_bytes(upstream.read_bytes(), ours.read_bytes())
+
+
+def compare_bitstreams_bytes(upstream: bytes, ours: bytes) -> tuple[bool, str]:
     """Same part and source tag, same configuration data; the date and time are the build's."""
     try:
-        (ha, la, pa), (hb, lb, pb) = (parse_bitstream(p.read_bytes()) for p in (upstream, ours))
+        (ha, la, pa), (hb, lb, pb) = (parse_bitstream(data) for data in (upstream, ours))
     except ValueError as error:
         return False, f"unreadable bitstream: {error}"
     differing = [t for t in sorted((ha.keys() | hb.keys()) - {"c", "d"}) if ha.get(t) != hb.get(t)]
@@ -1263,6 +1339,408 @@ def run_qor(options, designs: list[Path]) -> int:
 
 
 
+# ---- the sweeps: --ci-list, --synth-only, --twice, --from-makefile-netlist ----------------------
+#
+# What each asks, cheapest first. `--ci-list` builds nothing: it reads upstream's workflows.
+# `--synth-only` runs yosys on both sides, which is minutes for the whole repository because no
+# chip database is generated. `--twice` and `--from-makefile-netlist` build bitstreams.
+
+EXCLUSIONS = HERE / "xeda-exclusions.yaml"
+WORKFLOWS = HERE / ".github" / "workflows"
+WORKFLOW_FILES = ("smoke.yml", "heavy.yml")
+
+
+def load_yaml_file(path: Path):
+    try:
+        import yaml
+    except ImportError as error:
+        raise SetupError(f"PyYAML is needed to read {path.name}: {error}") from error
+    try:
+        return yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise SetupError(f"{path}: {error}") from error
+
+
+def read_exclusions() -> dict[str, str]:
+    """`xeda-exclusions.yaml`: the upstream-CI projects (and `regression/<case>`s) this fork does
+    not build through xeda, each with the reason (and, if given, the evidence). Data, not code: an
+    entry is a text, or a mapping with `reason` and optionally `evidence`."""
+    if not EXCLUSIONS.is_file():
+        return {}
+    doc = load_yaml_file(EXCLUSIONS) or {}
+    if not isinstance(doc, dict) or set(doc) - {"excluded"}:
+        raise SetupError(f"{EXCLUSIONS.name}: the only key is `excluded`, a mapping of project: reason")
+    excluded = doc.get("excluded") or {}
+    if not isinstance(excluded, dict):
+        raise SetupError(f"{EXCLUSIONS.name}: `excluded` is a mapping of project: reason")
+    result = {}
+    for name, entry in excluded.items():
+        if isinstance(entry, dict):
+            reason, evidence = entry.get("reason"), entry.get("evidence")
+            extra = set(entry) - {"reason", "evidence"}
+        else:
+            reason, evidence, extra = entry, None, set()
+        good = isinstance(reason, str) and reason.strip() and not extra
+        if not good or not (evidence is None or isinstance(evidence, str)):
+            raise SetupError(
+                f"{EXCLUSIONS.name}: `{name}` needs a reason (a text, or `reason:` and `evidence:` texts)"
+            )
+        result[str(name)] = reason.strip() + (f" ({evidence.strip()})" if evidence else "")
+    return result
+
+
+@dataclass
+class CiRow:
+    """One thing upstream's CI builds: a project's directory, or `regression/<case>`."""
+
+    name: str
+    where: list[str] = field(default_factory=list)  # smoke, determinism, heavy, regression
+    board: str | None = None  # the `BOARD` of the job, which picosoc selects its part by
+    state: str = "missing"  # `design file`, `excluded: <reason>` or `missing`
+    design: Path | None = None
+    problem: bool = True
+
+
+def regression_cases() -> list[str]:
+    """The cases `regression/run.sh` runs by default (its `cases=(...)` list)."""
+    text = (HERE / "regression" / "run.sh").read_text()
+    match = re.search(r"-eq 0 \] && cases=\(([^)]*)\)", text)
+    if match is None:
+        raise SetupError("regression/run.sh: no default `cases=(...)` list found")
+    return match[1].replace("\\\n", " ").split()
+
+
+def ci_rows() -> list[CiRow]:
+    """Every project upstream's workflows build, in workflow order, each with where it is built
+    and whether this fork has a design file for it or an exclusion."""
+    rows: dict[str, CiRow] = {}
+    for filename in WORKFLOW_FILES:
+        path = WORKFLOWS / filename
+        if not path.is_file():
+            raise SetupError(f"{path} does not exist: upstream's workflow is the list of projects")
+        doc = load_yaml_file(path)
+        for job_id, job in ((doc or {}).get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            board = next(
+                (str(s["env"]["BOARD"]) for s in steps if "BOARD" in (s.get("env") or {})), None
+            )
+            matrix = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
+            for entry in matrix:
+                if "project" not in entry:
+                    continue
+                role = Path(filename).stem if job_id == "project" else job_id
+                row = rows.setdefault(str(entry["project"]), CiRow(str(entry["project"])))
+                if role not in row.where:
+                    row.where.append(role)
+                row.board = row.board or board
+            if any("regression/run.sh" in str(s.get("run", "")) for s in steps):
+                for case in regression_cases():
+                    row = rows.setdefault(f"regression/{case}", CiRow(f"regression/{case}"))
+                    row.where.append("regression")
+    excluded = read_exclusions()
+    for row in rows.values():
+        base = Path(row.name).name
+        names = [f"{base}.yaml"] + ([f"{base}-{row.board}.yaml"] if row.board else [])
+        row.design = next((HERE / row.name / n for n in names if (HERE / row.name / n).is_file()), None)
+        if row.design and row.name in excluded:
+            row.state = f"CONFLICT: has a design file and is excluded ({excluded[row.name]})"
+        elif row.design:
+            row.state, row.problem = f"design file {row.design.relative_to(HERE)}", False
+        elif row.name in excluded:
+            row.state, row.problem = f"excluded: {excluded[row.name]}", False
+    stale = sorted(set(excluded) - set(rows))
+    if stale:
+        raise SetupError(
+            f"{EXCLUSIONS.name} names {', '.join(stale)}, which upstream's workflows do not build"
+        )
+    return list(rows.values())
+
+
+def run_ci_list() -> int:
+    rows = ci_rows()
+
+    def label(row: CiRow) -> str:
+        # a job's `BOARD` matters only to the project whose design file is named after it (picosoc)
+        board = row.board and row.design and row.design.stem.endswith(f"-{row.board}")
+        return ", ".join(row.where) + (f" (BOARD={row.board})" if board else "")
+
+    width = max(len(r.name) for r in rows)
+    wide = max(len(label(r)) for r in rows)
+    print(f"{'upstream CI project':<{width}}  {'built by':<{wide}}  state")
+    for row in rows:
+        print(f"{row.name:<{width}}  {label(row):<{wide}}  {row.state}")
+    missing = [r for r in rows if r.problem]
+    covered = {r.design for r in rows if r.design}
+    others = [p for p in designs_for([], True) if p not in covered]
+    print(
+        f"\n{len(rows)} projects: {sum(r.design is not None for r in rows)} with a design file, "
+        f"{sum(r.state.startswith('excluded') for r in rows)} excluded, "
+        f"{len(missing)} missing or inconsistent"
+    )
+    if others:
+        print("design files for projects upstream's CI does not build: "
+              + ", ".join(str(p.relative_to(HERE)) for p in others))
+    return 1 if missing else 0
+
+
+# ---- what a design file must agree with the Makefile on, whatever is built -----------------
+
+
+def disagreements(variables: dict[str, str], demo: Path, settings: dict) -> list[str]:
+    """Where the design file, as xeda resolved it (`settings.json` of a flow's run), is not what
+    the Makefile builds: the part, the top module, every HDL source in the Makefile's order and its
+    constraints file. A dropped source or a wrong part is a different design, whatever the build
+    of it says. The design may have more sources (a `Data` file yosys reads by itself)."""
+    problems = []
+    part = ((settings.get("effective_flow_settings") or {}).get("fpga") or {}).get("part")
+    if part != variables["PART"]:
+        problems.append(f"part: the Makefile builds {variables['PART']}, the design file {part}")
+    rtl = (settings.get("design") or {}).get("rtl") or {}
+    if rtl.get("top") != variables.get("TOP_MODULE"):
+        problems.append(f"top: the Makefile's is {variables.get('TOP_MODULE')}, the design file's {rtl.get('top')}")
+    ours = [
+        os.path.realpath(s if isinstance(s, str) else s.get("path") or s.get("file") or "")
+        for s in rtl.get("sources", [])
+    ]
+    wanted = [variables["TOP_VERILOG"], *variables.get("ADDITIONAL_SOURCES", "").split()]
+    position = -1
+    for source in wanted:
+        path = os.path.realpath(demo / source)
+        if path not in ours[position + 1 :]:
+            problems.append(
+                f"source {source}: the Makefile reads it"
+                + (" (in this order)" if path in ours else "")
+                + ", the design file does not"
+            )
+        else:
+            position = ours.index(path, position + 1)
+    constraints = variables.get("XDC")
+    if constraints and os.path.realpath(demo / constraints) not in ours:
+        problems.append(f"constraints {constraints}: the Makefile builds with it, the design file lacks it")
+    return problems
+
+
+# ---- the table of a sweep --------------------------------------------------------------------
+
+
+@dataclass
+class Row:
+    """One design's result in a sweep: the verdict, the cells of its table line, the details."""
+
+    design: str
+    passed: bool = False
+    cells: dict[str, str] = field(default_factory=dict)
+    lines: list[str] = field(default_factory=list)
+
+
+def run_sweep(options, designs: list[Path], check, columns: list[str]) -> int:
+    """*check* of each design (built *jobs* at once), the details of every design and a table with
+    the *columns* of each row's cells. Status 0 when every row passed."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    work = options.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+
+    def log(message: str) -> None:
+        print(f"  .. {message}", file=sys.stderr, flush=True)
+
+    def one(design: Path) -> Row:
+        name = str(design.relative_to(HERE))
+        try:
+            return check(design, work, options.xeda, options.mode, log)
+        except Exception as error:  # one design's trouble must not lose the others' rows
+            return Row(name, False, {"verdict": "FAILED"}, [f"{type(error).__name__}: {error}"])
+
+    with ThreadPoolExecutor(max_workers=options.jobs) as pool:
+        rows = list(pool.map(one, designs))
+    for row in rows:
+        print(f"\n{'PASS' if row.passed else 'FAIL'}  {row.design}")
+        print("\n".join(f"  {line}" for line in row.lines))
+    table = [{"design": r.design, **r.cells} for r in rows]
+    names = ["design", *columns]
+    widths = {c: max(len(c), *(len(t.get(c, "")) for t in table)) for c in names}
+    print("\n" + "  ".join(f"{c:<{widths[c]}}" for c in names))
+    for line in table:
+        print("  ".join(f"{line.get(c, ''):<{widths[c]}}" for c in names))
+    print(f"\n{sum(r.passed for r in rows)} of {len(rows)} passed")
+    return 0 if all(r.passed for r in rows) else 1
+
+
+# ---- --synth-only ---------------------------------------------------------------------------
+
+
+def compare_cells(upstream: dict[str, int], ours: dict[str, int]) -> tuple[bool, str]:
+    if upstream == ours:
+        return True, f"identical ({sum(upstream.values())} cells of {len(upstream)} types)"
+    changed = sorted(k for k in upstream.keys() | ours.keys() if upstream.get(k, 0) != ours.get(k, 0))
+    detail = ", ".join(f"{k} {upstream.get(k, 0)} -> {ours.get(k, 0)}" for k in changed[:8])
+    more = f", and {len(changed) - 8} more" if len(changed) > 8 else ""
+    return False, (
+        f"{sum(upstream.values())} cells upstream, {sum(ours.values())} through xeda; "
+        f"{len(changed)} types differ: {detail}{more}"
+    )
+
+
+def synth_only(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
+    """yosys on both sides, no chip database: the Makefile's own `make <project>.json` in a
+    scratch export, and `xeda run yosys_fpga`; the netlists' cell-type counts are compared, and the
+    design file's part, top and sources are checked against the Makefile's."""
+    demo = design.parent
+    row = Row(str(design.relative_to(HERE)), cells={"verdict": "FAILED"})
+    shared = work
+    work = work / design.stem
+    work.mkdir(parents=True, exist_ok=True)
+    upstream = build_upstream_netlist(demo, work, MAKE_ARGS.get(row.design, []), log)
+    if not upstream["ok"]:
+        row.lines.append(f"upstream: BUILD FAILED: {upstream['error']}")
+        return row
+    variables = upstream["variables"]
+    row.cells["part"] = variables["PART"]
+    ours = build_xeda(design, mode, work, shared, xeda, log, flow="yosys_fpga", label=f"{mode}-synth")
+    if not ours["ok"]:
+        row.lines.append(f"xeda {mode}: BUILD FAILED: {ours['error']}")
+        return row
+    settings = json.loads((ours["nodes"]["yosys_fpga"] / "settings.json").read_text())
+    problems = disagreements(variables, demo, settings)
+    a, b = netlist_cells(upstream["netlist"]), netlist_cells(ours["netlist"])
+    same, text = compare_cells(a, b)
+    row.cells.update(makefile=str(sum(a.values())), xeda=str(sum(b.values())))
+    row.lines.append(f"cells: {text}")
+    row.lines += [f"design file: {p}" for p in problems]
+    # xeda generates a generated input again on every run (`--clean`): one made under another
+    # `SOURCE_DATE_EPOCH` than the Makefile's copy leaves the two with different netlists
+    differ = generated_differ(demo, upstream["scratch"])
+    if differ:
+        row.lines.append(
+            f"generated inputs: {', '.join(differ)} is not what the Makefile built from; the two "
+            "built different netlists (run with --regenerate)"
+        )
+    row.passed = same and not problems and not differ
+    row.cells["verdict"] = (
+        "identical" if row.passed else ("DIFFERENT" if not same else
+                                        "DESIGN FILE" if problems else "INPUTS")
+    )
+    return row
+
+
+# ---- --twice ----------------------------------------------------------------------------------
+
+
+def twice(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
+    """Two clean xeda builds of the design, bitstreams equal but for the header's date and time
+    (upstream's determinism job, which does the same with the Makefile). A design that disagrees
+    with the Makefile (`disagreements`) is refused first: determinism of the wrong design is
+    nothing to check, and a wrong part would cost a chip database."""
+    demo = design.parent
+    row = Row(str(design.relative_to(HERE)), cells={"verdict": "FAILED"})
+    shared = work
+    work = work / design.stem
+    work.mkdir(parents=True, exist_ok=True)
+    _, _, variables = prepare_upstream(demo, work, MAKE_ARGS.get(row.design, []))
+    row.cells["part"] = variables["PART"]
+    pre = build_xeda(design, mode, work, shared, xeda, log, flow="yosys_fpga", label=f"{mode}-synth")
+    if not pre["ok"]:
+        row.lines.append(f"xeda {mode}: BUILD FAILED: {pre['error']}")
+        return row
+    settings = json.loads((pre["nodes"]["yosys_fpga"] / "settings.json").read_text())
+    problems = disagreements(variables, demo, settings)
+    if problems:
+        row.lines += [f"design file: {p}" for p in problems]
+        row.cells["verdict"] = "DESIGN FILE"
+        return row
+    copies = []
+    for n in (1, 2):
+        built = build_xeda(design, mode, work, shared, xeda, log, label=f"{mode}-{n}")
+        if not built["ok"]:
+            row.lines.append(f"build {n}: FAILED: {built['error']}")
+            return row
+        # the second build is clean: it empties the directory the first wrote its files in
+        kept = work / f"build{n}"
+        kept.mkdir(exist_ok=True)
+        copies.append((kept / "design.fasm", kept / "design.bit"))
+        shutil.copyfile(built["fasm"], copies[-1][0])
+        shutil.copyfile(built["bit"], copies[-1][1])
+    (fasm1, bit1), (fasm2, bit2) = copies
+    same_fasm = fasm_features(fasm1) == fasm_features(fasm2)
+    same_bit, bit_text = compare_bitstreams(bit1, bit2)
+    row.lines.append(
+        f"fasm: {len(fasm_features(fasm1))} features, "
+        + ("identical" if same_fasm else f"DIFFERENT ({len(fasm_features(fasm2))} in the second build)")
+    )
+    row.lines.append(f"bit:  {bit_text}")
+    row.passed = same_fasm and same_bit
+    row.cells["verdict"] = "deterministic" if row.passed else "NONDETERMINISTIC"
+    return row
+
+
+# ---- --from-makefile-netlist ------------------------------------------------------------------
+
+
+def derive_netlist_design(design: Path, netlist: Path, out: Path) -> Path:
+    """A design file that is *design*'s with the Makefile's own netlist as its only HDL: a typed
+    `JsonNetlist` source and the design's constraints, and `fpga` given to `nextpnr` and
+    `fpga_pack` (with `yosys_fpga` displaced there is no node to carry it). The design's other
+    nextpnr settings (`timing_allow_fail`, `extra_args`) stay."""
+    import yaml
+
+    doc = load_yaml_file(design) or {}
+    flows = dict(doc.get("flows") or {})
+    fpga = (flows.pop("yosys_fpga", None) or {}).get("fpga")
+    if fpga is None:
+        raise SetupError(f"{design}: `flows.yosys_fpga.fpga` names no part")
+    constraints = []
+    for entry in (doc.get("rtl") or {}).get("sources") or []:
+        path = entry if isinstance(entry, str) else entry.get("file") or entry.get("path")
+        if str(path).endswith(".xdc"):
+            constraints.append(str((design.parent / path).resolve()))
+    # a copy for each: one object in two places would be written as a YAML anchor and alias
+    flows["nextpnr"] = {"fpga": copy.deepcopy(fpga), **(flows.get("nextpnr") or {})}
+    flows["fpga_pack"] = {"fpga": copy.deepcopy(fpga), **(flows.get("fpga_pack") or {})}
+    derived = {
+        "name": f"{doc['name']}-from-makefile-netlist",
+        "rtl": {
+            "top": (doc.get("rtl") or {}).get("top"),
+            "sources": [{"file": str(netlist), "type": "JsonNetlist"}, *constraints],
+        },
+        "flows": flows,
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{design.stem}-from-makefile-netlist.yaml"
+    path.write_text(
+        f"# {design.name} with the Makefile's own netlist for its HDL (xeda_check.py --from-makefile-netlist)\n"
+        + yaml.safe_dump(derived, sort_keys=False)
+    )
+    return path
+
+
+def from_makefile_netlist(design: Path, work: Path, xeda: str, mode: str, log) -> Row:
+    """xeda's `nextpnr` and `fpga_pack` on the Makefile's own netlist, compared with the Makefile's
+    FASM and bitstream. It leaves synthesis out: a design that passes this and fails the normal
+    check differs in synthesis alone."""
+    demo = design.parent
+    row = Row(str(design.relative_to(HERE)), cells={"verdict": "FAILED"})
+    shared = work
+    work = work / design.stem
+    work.mkdir(parents=True, exist_ok=True)
+    upstream = build_upstream(demo, work, shared, MAKE_ARGS.get(row.design, []), log)
+    if not upstream["ok"]:
+        row.lines.append(f"upstream: BUILD FAILED: {upstream['error']}")
+        return row
+    row.cells["part"] = upstream["variables"]["PART"]
+    derived = derive_netlist_design(design, upstream["netlist"], work / "netlist")
+    ours = build_xeda(derived, "repository", work, shared, xeda, log, label="netlist")
+    if not ours["ok"]:
+        row.lines.append(f"xeda from the Makefile's netlist: BUILD FAILED: {ours['error']}")
+        return row
+    same_fasm, fasm_text = compare_fasm(upstream["fasm"], ours["fasm"])
+    same_bit, bit_text = compare_bitstreams(upstream["bit"], ours["bit"])
+    row.lines += [f"fasm: {fasm_text}", f"bit:  {bit_text}"]
+    row.passed = same_fasm and same_bit
+    row.cells["verdict"] = "identical" if row.passed else "DIFFERENT"
+    return row
+
+
+
 def designs_for(names: list[str], everything: bool) -> list[Path]:
     if everything:
         return sorted(
@@ -1308,9 +1786,30 @@ def main() -> int:
                         "that cannot change quality; differences inside it are `equal`")
     parser.add_argument("--rejudge", metavar="JSON",
                         help="decide the verdicts of an earlier --qor run's <out>.json again")
-    parser.add_argument("--jobs", type=int, default=1, help="--qor: designs built at once")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="--qor, --synth-only, --twice, --from-makefile-netlist: designs built at once")
     parser.add_argument("--out", default="qor", help="--qor: write <out>.json and <out>.csv")
+    parser.add_argument("--ci-list", action="store_true",
+                        help="list the projects upstream's CI builds (.github/workflows) and whether "
+                        "each has a design file or an exclusion (xeda-exclusions.yaml); exit 1 on a "
+                        "missing one. Builds nothing")
+    parser.add_argument("--synth-only", action="store_true",
+                        help="yosys on both sides, no chip database: the netlists' cell-type counts "
+                        "are compared (xeda run yosys_fpga against `make <project>.json`)")
+    parser.add_argument("--twice", action="store_true",
+                        help="two clean xeda builds, normalized bitstreams equal; without a design, "
+                        "upstream's determinism matrix")
+    parser.add_argument("--from-makefile-netlist", action="store_true",
+                        help="xeda's nextpnr and fpga_pack on the Makefile's own netlist, against the "
+                        "Makefile's FASM and bitstream (leaves synthesis out)")
+    parser.add_argument("--mode", choices=("repository", "defaults"), default="repository",
+                        help="--synth-only, --twice: where xeda is started: here (xedaproject.yaml "
+                        "applies) or from a directory with no project file")
     options = parser.parse_args()
+    modes = [f for f in ("qor", "ci_list", "synth_only", "twice", "from_makefile_netlist")
+             if getattr(options, f)]
+    if len(modes) > 1:
+        parser.error("choose one of --qor, --ci-list, --synth-only, --twice, --from-makefile-netlist")
     global REGENERATE, LITEX_PYTHON
     REGENERATE, LITEX_PYTHON = options.regenerate, options.litex_python
     # every process below inherits it: see GENERATED
@@ -1320,11 +1819,27 @@ def main() -> int:
         Path(options.out).with_suffix(".json").write_text(json.dumps(rows, indent=1, default=str))
         print_qor_summary(rows)
         return 0
-    if not options.designs and not options.all:
+    if options.ci_list:
+        if options.designs or options.all:
+            parser.error("--ci-list takes no design")
+        try:
+            return run_ci_list()
+        except SetupError as error:
+            print(f"setup: {error}", file=sys.stderr)
+            return 2
+    if not options.designs and not options.all and not options.twice:
         parser.error("name a demo, or give --all")
     try:
         tools = check_toolchain(options.xeda)
-        designs = designs_for(options.designs, options.all)
+        if options.twice and not options.designs and not options.all:
+            # upstream's determinism job: the projects its determinism matrix rebuilds
+            designs = []
+            for row in (r for r in ci_rows() if "determinism" in r.where):
+                if row.design is None:
+                    raise SetupError(f"{row.name} is in upstream's determinism matrix: {row.state}")
+                designs.append(row.design)
+        else:
+            designs = designs_for(options.designs, options.all)
     except SetupError as error:
         print(f"setup: {error}", file=sys.stderr)
         return 2
@@ -1332,6 +1847,12 @@ def main() -> int:
     options.work.mkdir(parents=True, exist_ok=True)
     if options.qor:
         return run_qor(options, designs)
+    if options.synth_only:
+        return run_sweep(options, designs, synth_only, ["part", "makefile", "xeda", "verdict"])
+    if options.twice:
+        return run_sweep(options, designs, twice, ["part", "verdict"])
+    if options.from_makefile_netlist:
+        return run_sweep(options, designs, from_makefile_netlist, ["part", "verdict"])
 
     def log(message: str) -> None:
         print(f"  .. {message}", file=sys.stderr, flush=True)

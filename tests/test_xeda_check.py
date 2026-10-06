@@ -1,0 +1,418 @@
+"""The oracle of `xeda_check.py`: a deliberately broken design file fails each mode.
+
+Run with openXC7's tools first on PATH and xeda (it needs PyYAML) on it too:
+
+    source /opt/openxc7/export.sh
+    python -m pytest tests/test_xeda_check.py
+
+Each test works in a small repository of its own under `tmp_path` (a copy of the checker, the
+Makefile include, a three-file demo and workflow fixtures, committed to a git repository because
+the checker exports `HEAD`), so the real design files are never touched. What needs no tool
+(`--ci-list`, the units) always runs; what runs yosys is skipped when the toolchain is not on
+PATH. The expensive part, a bitstream build (`--twice`, `--from-makefile-netlist`: a chip
+database for each side), runs only with `XEDA_CHECK_FULL=1`; everything that can fail cheaply
+fails in `--synth-only` or before any chip database exists.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.dont_write_bytecode = True  # loading the checker must not leave a `__pycache__` in the checkout
+
+FORK = Path(__file__).resolve().parents[1]
+
+spec = importlib.util.spec_from_file_location("xeda_check", FORK / "xeda_check.py")
+assert spec and spec.loader
+xeda_check = importlib.util.module_from_spec(spec)
+sys.modules["xeda_check"] = xeda_check
+spec.loader.exec_module(xeda_check)
+
+FULL = pytest.mark.skipif(
+    not os.environ.get("XEDA_CHECK_FULL"), reason="builds bitstreams: set XEDA_CHECK_FULL=1"
+)
+
+
+def toolchain_or_skip() -> None:
+    try:
+        xeda_check.check_toolchain("xeda")
+    except xeda_check.SetupError as error:
+        pytest.skip(str(error))
+
+
+# ---- a small repository ------------------------------------------------------------------------
+
+MAKEFILE = """FAMILY  = artix7
+PART    = xc7a35tcsg324-1
+PROJECT = mini
+CHIPDB  = ${ARTIX7_CHIPDB}
+
+# `unused.v` is read and changes nothing in the netlist: a design file that drops it builds the
+# same hardware, which only the comparison of its sources can see
+ADDITIONAL_SOURCES = counter.v unused.v
+
+include ../openXC7.mk
+"""
+MINI_V = """`default_nettype none
+module mini (input wire clk, output wire led);
+    counter c (.clk(clk), .msb(led));
+endmodule
+"""
+COUNTER_V = """`default_nettype none
+module counter (input wire clk, output wire msb);
+    reg [24:0] r = 0;
+    always @(posedge clk) r <= r + 1;
+    assign msb = r[24];
+endmodule
+"""
+UNUSED_V = """module unused (input wire a, output wire b);
+    assign b = ~a;
+endmodule
+"""
+MINI_XDC = """set_property LOC E3 [get_ports clk]
+set_property IOSTANDARD LVCMOS33 [get_ports {clk}]
+
+set_property LOC H5 [get_ports led]
+set_property IOSTANDARD LVCMOS33 [get_ports {led}]
+"""
+MINI_YAML = """name: mini
+rtl:
+  top: mini
+  sources:
+    - mini.v
+    - counter.v
+    - unused.v
+    - mini.xdc
+flows:
+  yosys_fpga:
+    fpga:
+      part: xc7a35tcsg324-1
+"""
+SMOKE = """name: smoke
+on: [push]
+jobs:
+  project:
+    strategy:
+      matrix:
+        include:
+          - family: artix7
+            upper: ARTIX7
+            project: mini
+          - family: artix7
+            upper: ARTIX7
+            project: boards
+    steps:
+      - name: Build
+        env:
+          BOARD: second
+        run: make -C "$PROJECT"
+  determinism:
+    strategy:
+      matrix:
+        include:
+          - family: artix7
+            upper: ARTIX7
+            project: mini
+    steps:
+      - run: make -C "$PROJECT"
+"""
+HEAVY = """name: heavy
+on: [workflow_dispatch]
+jobs:
+  project:
+    strategy:
+      matrix:
+        include:
+          - family: artix7
+            upper: ARTIX7
+            project: slow
+    steps:
+      - run: make -C "$PROJECT"
+"""
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def make_fork(root: Path, *, committed: bool = True) -> Path:
+    """The checker and what it reads, as a repository: `mini` (three Verilog files and their
+    constraints), `boards` (whose design file is named for the workflow's BOARD) and `slow`."""
+    root.mkdir(parents=True)
+    for name in ("xeda_check.py", "xedaproject.yaml", "openXC7.mk"):
+        shutil.copy(FORK / name, root / name)
+    write(root / ".github/workflows/smoke.yml", SMOKE)
+    write(root / ".github/workflows/heavy.yml", HEAVY)
+    mini = root / "mini"
+    write(mini / "Makefile", MAKEFILE)
+    write(mini / "mini.v", MINI_V)
+    write(mini / "counter.v", COUNTER_V)
+    write(mini / "unused.v", UNUSED_V)
+    write(mini / "mini.xdc", MINI_XDC)
+    write(mini / "mini.yaml", MINI_YAML)
+    write(root / "boards/boards-second.yaml", "name: boards-second\n")
+    write(root / "slow/slow.yaml", "name: slow\n")
+    if committed:
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "fixture"], cwd=root, check=True)
+    return root
+
+
+def check(root: Path, *arguments: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "xeda_check.py", *arguments],
+        cwd=root, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def edit(path: Path, old: str, new: str) -> None:
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new))
+
+
+@pytest.fixture
+def fork(tmp_path: Path) -> Path:
+    return make_fork(tmp_path / "fork")
+
+
+# ---- --ci-list: no tool, no build -------------------------------------------------------------
+
+
+def test_ci_list_is_green_when_every_project_has_a_design_file(fork: Path) -> None:
+    run = check(fork, "--ci-list")
+    assert run.returncode == 0, run.stdout + run.stderr
+    # the project matrix, the determinism matrix and heavy.yml are all read; the picosoc-like
+    # project's design file is the one named by the job's BOARD
+    out = "\n".join(" ".join(line.split()) for line in run.stdout.splitlines())
+    assert "mini smoke, determinism design file mini/mini.yaml" in out
+    assert "boards smoke (BOARD=second) design file boards/boards-second.yaml" in out
+    assert "slow heavy design file slow/slow.yaml" in out
+    assert "3 projects: 3 with a design file, 0 excluded, 0 missing" in out
+
+
+def test_ci_list_fails_on_a_project_without_a_design_file(fork: Path) -> None:
+    (fork / "mini/mini.yaml").unlink()
+    run = check(fork, "--ci-list")
+    assert run.returncode == 1
+    assert "mini" in run.stdout and "missing" in run.stdout
+    assert "1 missing or inconsistent" in run.stdout
+
+
+def test_ci_list_fails_on_a_project_upstream_added(fork: Path) -> None:
+    edit(fork / ".github/workflows/heavy.yml", "project: slow", "project: slower")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 1
+    assert "slower" in run.stdout and "missing" in run.stdout
+
+
+def test_an_exclusion_is_a_state_and_needs_its_reason(fork: Path) -> None:
+    (fork / "mini/mini.yaml").unlink()
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  mini: no board to compare against\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "excluded: no board to compare against" in run.stdout
+    write(
+        fork / "xeda-exclusions.yaml",
+        "excluded:\n  mini:\n    reason: a reason\n    evidence: its log\n",
+    )
+    assert "excluded: a reason (its log)" in check(fork, "--ci-list").stdout
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  mini: ''\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 2 and "needs a reason" in run.stderr
+
+
+def test_an_exclusion_that_is_stale_or_contradicts_a_design_file_fails(fork: Path) -> None:
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  not-in-ci: because\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 2 and "not-in-ci" in run.stderr
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  mini: because\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 1 and "CONFLICT" in run.stdout
+
+
+def test_the_real_workflows_are_listed_with_the_regression_cases() -> None:
+    """Upstream's own list (this repository's `.github/workflows`): 20 smoke projects, the heavy
+    one and the regression cases `regression/run.sh` runs by default."""
+    rows = {r.name: r for r in xeda_check.ci_rows()}
+    assert sum("smoke" in r.where for r in rows.values()) == 20
+    assert rows["litex-ddr-hpcstore-k420t"].where == ["heavy"]
+    assert [n for n, r in rows.items() if "determinism" in r.where] == [
+        "blinky-digilent-arty", "blinky-qmtech", "blinky-digilent-zybo", "ddr3-test-arty-s7"
+    ]
+    assert len([n for n in rows if n.startswith("regression/")]) == 18
+    assert rows["picosoc"].design == FORK / "picosoc/picosoc-kx2.yaml"
+
+
+# ---- units: what --twice and --from-makefile-netlist compare -------------------------------
+
+
+def test_the_bitstream_comparison_has_teeth() -> None:
+    """`--twice` rests on this: a bit of configuration data differs, the date does not count."""
+    original = (FORK / "blinky-digilent-arty/blinky.bit").read_bytes()
+    fields, _, data = xeda_check.parse_bitstream(original)
+    start = len(original) - len(data)
+
+    def compared(data: bytes) -> bool:
+        return xeda_check.compare_bitstreams_bytes(original, data)[0]
+
+    assert compared(original)
+    flipped = bytearray(original)
+    flipped[start + 1000] ^= 0x01
+    assert not compared(bytes(flipped))
+    redated = bytearray(original)
+    date = original.index(fields["c"])
+    redated[date : date + len(fields["c"])] = b"x" * len(fields["c"])
+    assert compared(bytes(redated))
+
+
+def test_the_netlist_design_has_the_makefiles_netlist_for_its_hdl(fork: Path, tmp_path: Path) -> None:
+    import yaml
+
+    edit(
+        fork / "mini/mini.yaml",
+        "flows:\n",
+        "flows:\n  nextpnr:\n    timing_allow_fail: true\n",
+    )
+    netlist = tmp_path / "mini.json"
+    netlist.write_text("{}")
+    derived = yaml.safe_load(
+        xeda_check.derive_netlist_design(fork / "mini/mini.yaml", netlist, tmp_path / "out").read_text()
+    )
+    assert derived["name"] == "mini-from-makefile-netlist"
+    assert derived["rtl"]["sources"] == [
+        {"file": str(netlist), "type": "JsonNetlist"},
+        str((fork / "mini/mini.xdc").resolve()),
+    ]
+    part = {"part": "xc7a35tcsg324-1"}
+    assert derived["flows"] == {
+        "nextpnr": {"fpga": part, "timing_allow_fail": True},
+        "fpga_pack": {"fpga": part},
+    }
+
+
+# ---- --synth-only: yosys on both sides --------------------------------------------------------
+
+
+def test_synth_only_passes_a_design_that_is_the_makefiles(fork: Path) -> None:
+    toolchain_or_skip()
+    run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "identical" in run.stdout and "1 of 1 passed" in run.stdout
+
+
+def test_synth_only_fails_a_wrong_part(fork: Path) -> None:
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "xc7a35tcsg324-1", "xc7a35tcsg324-3")
+    run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "part: the Makefile builds xc7a35tcsg324-1, the design file xc7a35tcsg324-3" in run.stdout
+
+
+def test_synth_only_fails_a_dropped_source_that_the_netlist_shows(fork: Path) -> None:
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "    - counter.v\n", "")
+    run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "identical" not in run.stdout
+    assert "source counter.v: the Makefile reads it" in run.stdout or "FAILED" in run.stdout
+
+
+def test_synth_only_fails_a_dropped_source_that_changes_nothing_in_the_netlist(fork: Path) -> None:
+    """`unused.v` is never instantiated, so the netlists are identical: the comparison of the
+    design file with the Makefile is what catches it."""
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "    - unused.v\n", "")
+    run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "cells: identical" in run.stdout
+    assert "source unused.v: the Makefile reads it, the design file does not" in run.stdout
+
+
+def test_synth_only_fails_dropped_constraints_and_a_wrong_top(fork: Path) -> None:
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "    - mini.xdc\n", "")
+    run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "constraints mini.xdc: the Makefile builds with it, the design file lacks it" in run.stdout
+
+
+# ---- --twice and --from-makefile-netlist: failures that need no chip database -------------------
+
+
+def test_twice_refuses_a_design_that_is_not_the_makefiles_before_building_it(fork: Path) -> None:
+    """A wrong part would cost a chip database; a dropped source that changes nothing would pass
+    a determinism check of the wrong design. Both are refused first."""
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "xc7a35tcsg324-1", "xc7a35tcsg324-3")
+    run = check(fork, "--twice", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "design file: part:" in run.stdout and "DESIGN FILE" in run.stdout
+    assert not (fork / "w/xeda_run/.cache/xilinx-chipdb").exists()  # no chip database was made
+    write(fork / "mini/mini.yaml", MINI_YAML)
+    edit(fork / "mini/mini.yaml", "    - unused.v\n", "")
+    run = check(fork, "--twice", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1 and "source unused.v" in run.stdout
+
+
+def test_twice_fails_a_design_xeda_cannot_build(fork: Path) -> None:
+    toolchain_or_skip()
+    edit(fork / "mini/mini.yaml", "    - counter.v\n", "")  # `counter` is then undefined
+    run = check(fork, "--twice", "mini", "--work", str(fork / "w"))
+    assert run.returncode == 1, run.stdout + run.stderr
+    assert "BUILD FAILED" in run.stdout
+
+
+# ---- the bitstream modes, on one small Artix-7 design (set XEDA_CHECK_FULL=1) -------------------
+
+
+@pytest.fixture(scope="module")
+def full_fork(tmp_path_factory) -> Path:
+    toolchain_or_skip()
+    return make_fork(tmp_path_factory.mktemp("full") / "fork")
+
+
+def full(fork: Path, *arguments: str) -> subprocess.CompletedProcess:
+    # one work directory for all: the chip databases are generated once
+    return check(fork, *arguments, "mini", "--work", str(fork.parent / "work"))
+
+
+@FULL
+def test_twice_passes_a_deterministic_design(full_fork: Path) -> None:
+    run = full(full_fork, "--twice")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "deterministic" in run.stdout and "identical but for the header's date and time" in run.stdout
+
+
+@FULL
+def test_from_makefile_netlist_passes_a_design_that_is_the_makefiles(full_fork: Path) -> None:
+    run = full(full_fork, "--from-makefile-netlist")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "identical" in run.stdout
+
+
+@FULL
+def test_from_makefile_netlist_fails_a_wrong_part_and_dropped_constraints(full_fork: Path) -> None:
+    design = full_fork / "mini/mini.yaml"
+    try:
+        edit(design, "xc7a35tcsg324-1", "xc7a35tcsg324-3")  # the same die, so the same chip database
+        run = full(full_fork, "--from-makefile-netlist")
+        assert run.returncode == 1, run.stdout + run.stderr
+        assert "header differs" in run.stdout
+        write(design, MINI_YAML)
+        edit(design, "    - mini.xdc\n", "")
+        run = full(full_fork, "--from-makefile-netlist")
+        assert run.returncode == 1, run.stdout + run.stderr
+        assert "identical" not in run.stdout
+    finally:
+        write(design, MINI_YAML)

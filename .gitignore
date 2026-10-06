@@ -65,3 +65,4 @@ log
 # ---- xeda ----
 xeda_run/
 .xeda-check/
+__pycache__/
