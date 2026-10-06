@@ -22,4 +22,5 @@ flows:
     flow3: false             # yosys's default abc9 script, not xeda's `abc9.script.flow3`
     check_assert: false      # openXC7.mk does not run `check -assert`
     read_verilog_flags: []   # plain `read_verilog`: no `-sv`, no `-noautowire`
+    systemverilog: default   # yosys's built-in reader, as a bare `yosys <files>` reads
     synth_pass_only: true    # the `synth_xilinx` pass alone: no `hierarchy`, `proc`, `flatten`, `opt_clean`
