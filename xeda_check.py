@@ -1039,6 +1039,17 @@ def compare_qor(
 # ---- one design, quality of results ----------------------------------------------------------
 
 
+def inputs_differ_verdict(ours: dict) -> None:
+    """A mode built from other generated inputs than the baseline's measures another design:
+    whatever the numbers say, nothing is comparable. Kept as `inputs_differ`, apart from the
+    verdict, so that `rejudge` puts it back."""
+    ours["verdict"] = "not comparable"
+    ours["notes"] = (
+        f"{', '.join(ours['inputs_differ'])} is not what the baseline built from: different "
+        f"netlists (run with --regenerate); " + ours.get("notes", "")
+    )
+
+
 def qor_design(
     design: Path, work: Path, xeda: str, modes: list[str], seeds: int, tolerance: float, noise: bool, log
 ) -> dict:
@@ -1097,11 +1108,8 @@ def qor_design(
         differ = generated_differ(demo, base["scratch"])
         if differ:
             # xeda generated its inputs again (`--clean`) and they are not the baseline's
-            row["modes"][mode]["verdict"] = "not comparable"
-            row["modes"][mode]["notes"] = (
-                f"{', '.join(differ)} is not what the baseline built from: different netlists "
-                f"(run with --regenerate); " + row["modes"][mode]["notes"]
-            )
+            row["modes"][mode]["inputs_differ"] = differ
+            inputs_differ_verdict(row["modes"][mode])
     return row
 
 
@@ -1172,6 +1180,8 @@ def rejudge(rows: list[dict], tolerance: float) -> list[dict]:
         for mode, ours in row["modes"].items():
             if ours.get("ok"):
                 ours.update(compare_qor(base, ours, tolerance, band, base.get('pnr_args', '')))
+                if ours.get("inputs_differ"):
+                    inputs_differ_verdict(ours)
     return rows
 
 
@@ -1210,7 +1220,10 @@ def run_qor(options, designs: list[Path]) -> int:
     print_qor_summary(rows)
     worse = [(r["design"], m) for r in rows for m, o in r["modes"].items() if o.get("verdict") == "worse"]
     print(f"\n{len(worse)} worse than the baseline: " + ", ".join(f"{d} ({m})" for d, m in worse))
-    return 1 if worse else 0
+    differ = [(r["design"], m) for r in rows for m, o in r["modes"].items() if o.get("inputs_differ")]
+    if differ:
+        print("built from other generated inputs than the baseline: " + ", ".join(f"{d} ({m})" for d, m in differ))
+    return 1 if worse or differ else 0
 
 
 
