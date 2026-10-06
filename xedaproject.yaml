@@ -1,8 +1,16 @@
 # xeda project file for this repository.
 #
-# The `flows` section is the repository's own recipe, the one `openXC7.mk` runs for every
-# demo: `yosys synth_xilinx -flatten -abc9 -arch xc7`, with yosys's own abc9 script and without
-# xeda's additions. It applies to every design built from this directory; a design file's own
+# The `flows` section is the repository's own recipe, the one `openXC7.mk` runs for every demo:
+# `yosys synth_xilinx -flatten -abc9 -arch xc7`, with yosys's own abc9 script and without xeda's
+# additions. `synth_pass_only` is what makes that so: xeda then runs the `synth_xilinx` pass and
+# nothing before it (no `hierarchy`, `proc`, `flatten` or `opt_clean -purge`, which changed abc9's
+# mapping, hence the FASM, of a design as large as `hdmi-stlv7325`). Still not the Makefile's
+# command, though the synthesis it runs is: xeda reads the sources with `read_verilog -defer`
+# where the Makefile hands them to yosys as arguments, and spells the pass's option `-family xc7`
+# where the Makefile writes `-arch xc7` and `-abc9` (yosys 0.69 accepts both spellings and abc9
+# is unconditional); the rest xeda adds comes after synthesis (`check`, `stat`, `write_json`,
+# `write_verilog`). `xeda_check.py` checks the outcome: the FASM of both builds is identical.
+# It applies to every design built from this directory; a design file's own
 # `flows` section is applied over it. Build without it (xeda's defaults) by running from the
 # design's directory, where no project file is found.
 #
@@ -14,3 +22,4 @@ flows:
     flow3: false             # yosys's default abc9 script, not xeda's `abc9.script.flow3`
     check_assert: false      # openXC7.mk does not run `check -assert`
     read_verilog_flags: []   # plain `read_verilog`: no `-sv`, no `-noautowire`
+    synth_pass_only: true    # the `synth_xilinx` pass alone: no `hierarchy`, `proc`, `flatten`, `opt_clean`
