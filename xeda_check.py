@@ -382,11 +382,13 @@ def chipdb_directory(shared: Path, family: str, env: dict[str, str]) -> Path:
     return shared / "chipdb" / f"{family}-{toolchain_identity(family, env)}"
 
 
-def chipdb_ready(scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], log) -> None:
+def chipdb_ready(
+    scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], log, args: list[str] = []
+) -> None:
     """Have the Makefile's own rule generate the part's chip database, once at a time: two checks
-    of one part must not both write `<part>.bin` while the other reads it. The cost of the
-    generation (`/usr/bin/time -l`: wall time and the largest process's peak memory) is kept
-    beside the database as `<part>.cost`."""
+    of one part must not both write `<part>.bin` while the other reads it. *args* are the demo's
+    `MAKE_ARGS`, which may name the part. The cost of the generation (`/usr/bin/time -l`: wall
+    time and the largest process's peak memory) is kept beside the database as `<part>.cost`."""
     import fcntl
 
     target = chipdb / f"{dbpart}.bin"
@@ -396,11 +398,13 @@ def chipdb_ready(scratch: Path, chipdb: Path, dbpart: str, env: dict[str, str], 
             log(f"upstream: generating {target}")
             timer = ["/usr/bin/time", "-l"] if Path("/usr/bin/time").is_file() else []
             run = subprocess.run(
-                [*timer, "make", "-C", str(scratch), str(target)],
+                [*timer, "make", "-C", str(scratch), str(target), *args],
                 env=env, capture_output=True, text=True,
             )
             if run.returncode:
-                raise SetupError(f"chip database {target}: {run.stderr[-500:]}")
+                # make's own complaint, without the report of `time` after it
+                stderr = re.split(r"\n\s*[\d.]+ real", run.stderr)[0]
+                raise SetupError(f"chip database {target}: {stderr[-500:]}")
             cost = generation_cost(run.stderr)
             if cost:
                 (chipdb / f"{dbpart}.cost").write_text(cost + "\n")
@@ -457,7 +461,7 @@ def build_upstream(
     chipdb = chipdb_directory(shared, family, env)
     chipdb.mkdir(parents=True, exist_ok=True)
     env[f"{family.upper()}_CHIPDB"] = str(chipdb)
-    chipdb_ready(scratch, chipdb, variables["DBPART"], env, log)
+    chipdb_ready(scratch, chipdb, variables["DBPART"], env, log, args)
     cmd = ["make", "-C", str(scratch), *args]
     dump = scratch / "placement.json"
     if placement:

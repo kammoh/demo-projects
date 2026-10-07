@@ -456,6 +456,19 @@ def test_a_directory_is_its_own_design_file_among_others(fork: Path, monkeypatch
         xeda_check.designs_for(["boards"], False)
 
 
+def test_the_chip_database_is_made_for_the_part_the_make_arguments_name(tmp_path: Path) -> None:
+    """A design file whose `MAKE_ARGS` set `PART=` needs the chip database of that part: the
+    Makefile's rule for it exists only with the same arguments."""
+    scratch, chipdb = tmp_path / "demo", tmp_path / "chipdb"
+    chipdb.mkdir()
+    write(scratch / "Makefile", "PART = parta\nCHIPDB = ${TEST_CHIPDB}\n\n${CHIPDB}/${PART}.bin:\n\techo db > $@\n")
+    env = dict(os.environ, TEST_CHIPDB=str(chipdb))
+    with pytest.raises(xeda_check.SetupError, match="No rule to make target"):
+        xeda_check.chipdb_ready(scratch, chipdb, "partb", env, print)
+    xeda_check.chipdb_ready(scratch, chipdb, "partb", env, print, ["PART=partb"])
+    assert (chipdb / "partb.bin").read_text() == "db\n"
+
+
 def with_part(data: bytes, part: bytes) -> bytes:
     """*data*, a bitstream, with the part (`b`) field of its header replaced by *part*."""
     i = 13
