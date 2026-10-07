@@ -9,7 +9,7 @@
 #   excluded:
 #     regression/bufr-pad-site:
 #       reason: placement-only case, no FASM for xeda's nextpnr to deliver
-#       evidence: regression/bufr-pad-site/no_route
+#       evidence: EXCLUDED.md
 #
 excluded:
   regression/bufr-pad-site:
@@ -17,10 +17,10 @@ excluded:
       placement-only case: run.sh stops nextpnr after placement (`--no-route`) and judges the
       placed design, with no FASM; xeda's nextpnr always writes its FASM output and fails a run
       that has none, so there is no xeda build to judge
-    evidence: regression/bufr-pad-site/no_route
+    evidence: EXCLUDED.md
   regression/bufr-sink-region:
     reason: >-
       placement-only case: run.sh stops nextpnr after placement (`--no-route`) and judges the
       placed design, with no FASM; xeda's nextpnr always writes its FASM output and fails a run
       that has none, so there is no xeda build to judge
-    evidence: regression/bufr-sink-region/no_route
+    evidence: EXCLUDED.md
