@@ -4,7 +4,7 @@
     source /opt/openxc7/export.sh
     python xeda_check.py blinky-digilent-arty            # a demo with one design file
     python xeda_check.py picosoc/picosoc-kx2.yaml        # or a design file
-    python xeda_check.py --all                           # every demo that has a design file
+    python xeda_check.py --all                           # every design file, but those excluded
     python xeda_check.py --regenerate hdmi-stlv7325      # run a demo's generator (LiteX) again
     python xeda_check.py --ci-list                       # which of upstream's CI projects lack a design
     python xeda_check.py --synth-only --all --jobs 3     # yosys on both sides, minutes, no chip database
@@ -36,6 +36,9 @@ The four modes above the QoR one each ask one narrower question; the design file
                          `missing`. A job's `BOARD` picks picosoc's design file (`picosoc-kx2.yaml`).
                          Exit 1 on a `missing` project, on a project that is both excluded and has a
                          design file, 2 on an exclusion naming a project upstream does not build.
+                         `xeda-exclusions.yaml` may also name a design file (`<dir>/<file>.yaml`) of
+                         a project upstream's CI does not build: `--all` reports it as excluded,
+                         with its reason, instead of building it (naming it still builds it).
   --synth-only           yosys on both sides and no chip database: `make <project>.json` in the
                          scratch export, and `xeda run yosys_fpga` (`--mode`: repository, the default,
                          or defaults); the cell-type counts of the two netlists must be equal, and the
@@ -1448,9 +1451,11 @@ def load_yaml_file(path: Path):
 
 
 def read_exclusions() -> dict[str, str]:
-    """`xeda-exclusions.yaml`: the upstream-CI projects (and `regression/<case>`s) this fork does
-    not build through xeda, each with the reason (and, if given, the evidence). Data, not code: an
-    entry is a text, or a mapping with `reason` and optionally `evidence`."""
+    """`xeda-exclusions.yaml`: what this fork does not build through xeda, each with the reason
+    (and, if given, the evidence). An entry names an upstream-CI project (or `regression/<case>`)
+    that has no design file, or a design file (`<dir>/<file>.yaml`) of a project upstream's CI
+    does not build. Data, not code: an entry is a text, or a mapping with `reason` and optionally
+    `evidence`."""
     if not EXCLUSIONS.is_file():
         return {}
     doc = load_yaml_file(EXCLUSIONS) or {}
@@ -1473,6 +1478,28 @@ def read_exclusions() -> dict[str, str]:
             )
         result[str(name)] = reason.strip() + (f" ({evidence.strip()})" if evidence else "")
     return result
+
+
+def split_exclusions() -> tuple[dict[str, str], dict[Path, str]]:
+    """The exclusions of upstream-CI projects, by project name, and those of design files, by
+    path; a design file that does not exist is an error."""
+    projects: dict[str, str] = {}
+    designs: dict[Path, str] = {}
+    for name, reason in read_exclusions().items():
+        if Path(name).suffix in (".yaml", ".yml"):
+            if not (HERE / name).is_file():
+                raise SetupError(f"{EXCLUSIONS.name} names {name}, which is not a design file")
+            designs[HERE / name] = reason
+        else:
+            projects[name] = reason
+    return projects, designs
+
+
+def excluded_design_files() -> dict[Path, str]:
+    """The design files `--all` reports as excluded instead of building, with their reasons:
+    each of a project upstream's CI does not build (`ci_rows` checks that)."""
+    ci_rows()
+    return split_exclusions()[1]
 
 
 @dataclass
@@ -1523,7 +1550,7 @@ def ci_rows() -> list[CiRow]:
                 for case in regression_cases():
                     row = rows.setdefault(f"regression/{case}", CiRow(f"regression/{case}"))
                     row.where.append("regression")
-    excluded = read_exclusions()
+    excluded, excluded_designs = split_exclusions()
     for row in rows.values():
         base = Path(row.name).name
         names = [f"{base}.yaml"] + ([f"{base}-{row.board}.yaml"] if row.board else [])
@@ -1538,6 +1565,13 @@ def ci_rows() -> list[CiRow]:
     if stale:
         raise SetupError(
             f"{EXCLUSIONS.name} names {', '.join(stale)}, which upstream's workflows do not build"
+        )
+    # a project upstream's CI builds is excluded by its name, and then has no design file
+    built = sorted(str(p.relative_to(HERE)) for p in excluded_designs if p in {r.design for r in rows.values()})
+    if built:
+        raise SetupError(
+            f"{EXCLUSIONS.name} names {', '.join(built)}, the design file of a project upstream's "
+            "CI builds: exclude that project by its name, with no design file"
         )
     return list(rows.values())
 
@@ -1558,6 +1592,7 @@ def run_ci_list() -> int:
     missing = [r for r in rows if r.problem]
     covered = {r.design for r in rows if r.design}
     others = [p for p in designs_for([], True) if p not in covered]
+    excluded = excluded_design_files()
     print(
         f"\n{len(rows)} projects: {sum(r.design is not None for r in rows)} with a design file, "
         f"{sum(r.state.startswith('excluded') for r in rows)} excluded, "
@@ -1566,6 +1601,8 @@ def run_ci_list() -> int:
     if others:
         print("design files for projects upstream's CI does not build: "
               + ", ".join(str(p.relative_to(HERE)) for p in others))
+    for path, reason in excluded.items():
+        print(f"excluded design file (not built by --all): {path.relative_to(HERE)}: {reason}")
     return 1 if missing else 0
 
 
@@ -2045,11 +2082,15 @@ def regression_designs(names: list[str]) -> list[Path]:
 
 
 def designs_for(names: list[str], everything: bool) -> list[Path]:
+    """The design files named (a demo directory or a design file; an excluded one too), or with
+    *everything*, every demo's design file but those excluded (`excluded_design_files`)."""
     if everything:
+        excluded = excluded_design_files()
         return sorted(
             p
             for p in HERE.glob("*/*.yaml")
-            if p.stem == p.parent.name or p.stem.startswith(p.parent.name + "-")
+            if (p.stem == p.parent.name or p.stem.startswith(p.parent.name + "-"))
+            and p not in excluded
         )
     found = []
     for name in names:
@@ -2153,11 +2194,23 @@ def main() -> int:
             designs = regression_designs(options.designs)
         else:
             designs = designs_for(options.designs, options.all)
+        excluded = excluded_design_files() if options.all else {}
     except SetupError as error:
         print(f"setup: {error}", file=sys.stderr)
         return 2
     print("tools: " + ", ".join(f"{name}={path}" for name, path in tools.items()))
+    for path, reason in excluded.items():
+        print(f"EXCLUDED  {path.relative_to(HERE)}: {reason}")
     options.work.mkdir(parents=True, exist_ok=True)
+    status = run_mode(options, designs)
+    if excluded:
+        print(f"{len(excluded)} excluded, not built (xeda-exclusions.yaml): "
+              + ", ".join(str(p.relative_to(HERE)) for p in excluded))
+    return status
+
+
+def run_mode(options, designs: list[Path]) -> int:
+    """Build and check *designs* in the mode *options* select; the exit status."""
     if options.qor:
         return run_qor(options, designs)
     if options.synth_only:

@@ -1,16 +1,14 @@
-# Projects that upstream's CI builds and this fork does not build through xeda, each with the
-# reason (and, if there is one, the evidence). `xeda_check.py --ci-list` reads this file: a
-# project in upstream's workflows with neither a design file nor an entry here is `missing` and
-# fails the list. An entry for a project upstream does not build, or for one that also has a
-# design file, is an error too.
+# What this fork does not build through xeda, each with the reason and the evidence
+# (EXCLUDED.md has it in full). `xeda_check.py` reads this file. An entry names one of two things:
 #
-# Names are the directories upstream's workflows build (`picosoc`) or `regression/<case>`:
-#
-#   excluded:
-#     regression/bufr-pad-site:
-#       reason: placement-only case, no FASM for xeda's nextpnr to deliver
-#       evidence: EXCLUDED.md
-#
+# - A project upstream's CI builds, by the name its workflows give it (`picosoc`,
+#   `regression/<case>`), which then has no design file. `--ci-list` fails on a CI project with
+#   neither a design file nor an entry here, on one with both, and on an entry for a project the
+#   workflows do not build.
+# - A design file, `<dir>/<file>.yaml`, of a project upstream's CI does not build, which builds
+#   on neither route. `--all` reports it as excluded instead of building it; naming the design
+#   file builds it all the same, to see whether the exclusion is still needed. An entry for a
+#   design file of a CI project, or for one that does not exist, is an error.
 excluded:
   regression/bufr-pad-site:
     reason: >-
@@ -24,3 +22,15 @@ excluded:
       placed design, with no FASM; xeda's nextpnr always writes its FASM output and fails a run
       that has none, so there is no xeda build to judge
     evidence: EXCLUDED.md
+  blinky-ypcb003381p1/blinky-ypcb003381p1.yaml:
+    reason: >-
+      builds on neither route: nextpnr-himbaechel 1.0.0-41 cannot parse the `;#` comment at the
+      end of line 3 of upstream's ypcb003381p1.xdc, and the Makefile and xeda both stop there
+    evidence: >-
+      both routes: ERROR: failed to parse target ';' (on line 3); EXCLUDED.md
+  picosoc/picosoc-genesys2.yaml:
+    reason: >-
+      builds on neither route: genesys2.v drives led[1:0] and upstream's picosoc-genesys2.xdc
+      places only led[0], so nextpnr stops on the unplaced led[1], under the Makefile and xeda
+    evidence: >-
+      both routes: ERROR: FIXME: unconstrained IO not supported (pad led[1]); EXCLUDED.md

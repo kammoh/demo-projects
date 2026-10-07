@@ -241,6 +241,25 @@ def test_an_exclusion_that_is_stale_or_contradicts_a_design_file_fails(fork: Pat
     assert run.returncode == 1 and "CONFLICT" in run.stdout
 
 
+def test_a_design_file_outside_ci_can_be_excluded(fork: Path) -> None:
+    """A design file of a project upstream's CI does not build may be excluded, by its path:
+    `--ci-list` shows it with its reason. One that does not exist, or the design file of a CI
+    project (which is excluded by its name, without a design file), is an error."""
+    write(fork / "extra/extra.yaml", "name: extra\n")
+    write(fork / "xeda-exclusions.yaml",
+          "excluded:\n  extra/extra.yaml:\n    reason: builds on neither route\n    evidence: its log\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "excluded design file (not built by --all): extra/extra.yaml: builds on neither route (its log)" in run.stdout
+    assert "design files for projects upstream's CI does not build" not in run.stdout
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  extra/gone.yaml: because\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 2 and "extra/gone.yaml, which is not a design file" in run.stderr
+    write(fork / "xeda-exclusions.yaml", "excluded:\n  mini/mini.yaml: because\n")
+    run = check(fork, "--ci-list")
+    assert run.returncode == 2 and "the design file of a project upstream's CI builds" in run.stderr
+
+
 def test_the_real_workflows_are_listed_with_the_regression_cases() -> None:
     """Upstream's own list (this repository's `.github/workflows`): 20 smoke projects, the heavy
     one and the regression cases `regression/run.sh` runs by default."""
@@ -511,6 +530,26 @@ def test_synth_only_passes_a_design_that_is_the_makefiles(fork: Path) -> None:
     run = check(fork, "--synth-only", "mini", "--work", str(fork / "w"))
     assert run.returncode == 0, run.stdout + run.stderr
     assert "identical" in run.stdout and "1 of 1 passed" in run.stdout
+
+
+def test_all_reports_an_excluded_design_file_instead_of_building_it(fork: Path) -> None:
+    """`--all` builds every design file but the excluded ones, which it reports with their
+    reasons; without the exclusion, the broken design file fails the sweep."""
+    toolchain_or_skip()
+    for name in ("boards", "slow"):  # stand-ins that no tool can build
+        shutil.rmtree(fork / name)
+    write(fork / "mini/mini-broken.yaml", MINI_YAML.replace("name: mini", "name: mini-broken")
+          .replace("top: mini", "top: counter"))
+    write(fork / "xeda-exclusions.yaml",
+          "excluded:\n  mini/mini-broken.yaml: its top is not the Makefile's\n")
+    run = check(fork, "--synth-only", "--all", "--work", str(fork / "w"))
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "EXCLUDED  mini/mini-broken.yaml: its top is not the Makefile's" in run.stdout
+    assert "1 of 1 passed" in run.stdout
+    assert "1 excluded, not built (xeda-exclusions.yaml): mini/mini-broken.yaml" in run.stdout
+    (fork / "xeda-exclusions.yaml").unlink()
+    run = check(fork, "--synth-only", "--all", "--work", str(fork / "w"))
+    assert run.returncode == 1 and "1 of 2 passed" in run.stdout, run.stdout + run.stderr
 
 
 def test_synth_only_fails_a_wrong_part(fork: Path) -> None:
