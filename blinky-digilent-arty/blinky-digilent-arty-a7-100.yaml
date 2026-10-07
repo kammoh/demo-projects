@@ -20,6 +20,6 @@ flows:
     # In capitals, as the bundled board database spells it: xeda matches board names exactly
     # for now. Any letter case will do once it matches them case-insensitively.
     board: ARTY_A7_100T
-    # Repeats the board's part: openfpgaloader still asks for `fpga` beside `board`. Not needed
-    # once xeda takes the part from the board for this flow.
+    # Repeats the board's part: a `vivado_synth+openfpgaloader` run still asks for `fpga` beside
+    # `board`. Not needed once xeda takes the part from the board for that run too.
     fpga.part: xc7a100tcsg324-1

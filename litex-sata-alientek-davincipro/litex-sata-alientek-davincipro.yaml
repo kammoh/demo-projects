@@ -5,10 +5,10 @@
 # `litex_pcie.v` reads its `.init` memory images with `$readmemh("litex_pcie_rom.init")`: yosys
 # finds them beside the source, and xeda tracks them from yosys's own list of files read.
 #
-# KNOWN FAILING in `xeda_check.py` (stage 1): xeda's synthesis script is not the Makefile's, and
-# abc9 maps this SoC differently (170407 FASM features upstream, 167096 here). Fed the Makefile's
-# own netlist as a `JsonNetlist` source, xeda's nextpnr and fpga_pack give the identical FASM and
-# bitstream, so the difference is in synthesis alone (xeda issue Y4, plan 39 Q1).
+# Built from the repository root (the project file runs the `synth_xilinx` pass alone), it gives
+# the Makefile's FASM and bitstream: `xeda_check.py` found 168,187 identical features with
+# nextpnr-himbaechel 1.0.0-41. xeda's own synthesis recipe (built from a directory with no project
+# file) maps this SoC differently, and so places and routes it differently too.
 name: litex-sata-alientek-davincipro
 description: LiteX SoC with a SATA core (GTP transceivers) on the Alientek DavinciPro
 rtl:
