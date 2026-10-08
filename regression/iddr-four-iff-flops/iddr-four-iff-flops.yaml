@@ -1,5 +1,4 @@
-# xeda design for the regression case `iddr-four-iff-flops`: what `regression/run.sh iddr-four-iff-flops` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for iddr-four-iff-flops: what `regression/run.sh iddr-four-iff-flops` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/iddr-four-iff-flops/iddr-four-iff-flops.yaml
 name: reg-iddr-four-iff-flops

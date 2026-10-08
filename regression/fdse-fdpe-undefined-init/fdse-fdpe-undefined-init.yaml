@@ -1,9 +1,6 @@
-# xeda design for the regression case `fdse-fdpe-undefined-init`: what `regression/run.sh fdse-fdpe-undefined-init` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for fdse-fdpe-undefined-init: what `regression/run.sh fdse-fdpe-undefined-init` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/fdse-fdpe-undefined-init/fdse-fdpe-undefined-init.yaml
-# `part.txt` names xc7z010clg400, with no speed grade; xeda needs the full part, so this
-# file names xc7z010clg400-1 (the grade changes neither the FASM nor the chip database).
 name: reg-fdse-fdpe-undefined-init
 rtl:
   top: top
@@ -13,7 +10,7 @@ rtl:
 flows:
   yosys_fpga:
     fpga:
-      part: xc7z010clg400-1
+      part: xc7z010clg400-1  # part.txt has no speed grade; xeda needs the full part
     nodsp: true
     synth_flags: [-nocarry]
   nextpnr:

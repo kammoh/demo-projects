@@ -1,19 +1,12 @@
-# xeda design for litex-sata-alientek-davincipro: what `make -C litex-sata-alientek-davincipro`
-# builds. Build it from the repository root, so that `xedaproject.yaml` is found:
+# xeda design for litex-sata-alientek-davincipro: what `make -C litex-sata-alientek-davincipro` builds.
+# Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run fpga_pack litex-sata-alientek-davincipro/litex-sata-alientek-davincipro.yaml
-#
-# `litex_pcie.v` reads its `.init` memory images with `$readmemh("litex_pcie_rom.init")`: yosys
-# finds them beside the source, and xeda tracks them from yosys's own list of files read.
-#
-# Built from the repository root (the project file runs the `synth_xilinx` pass alone), it gives
-# the Makefile's FASM and bitstream: `xeda_check.py` found 168,187 identical features with
-# nextpnr-himbaechel 1.0.0-41. xeda's own synthesis recipe (built from a directory with no project
-# file) maps this SoC differently, and so places and routes it differently too.
 name: litex-sata-alientek-davincipro
 description: LiteX SoC with a SATA core (GTP transceivers) on the Alientek DavinciPro
 rtl:
   top: litex_pcie
   sources:
+    # litex_pcie_*.init, read by `$readmemh`, are not listed: xeda tracks the files yosys reads
     - litex_pcie.v
     - ../vexriscv/VexRiscv.v
     - litex_pcie.xdc

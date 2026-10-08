@@ -1,14 +1,7 @@
-# What this fork does not build through xeda, each with the reason and the evidence
-# (EXCLUDED.md has it in full). `xeda_check.py` reads this file. An entry names one of two things:
-#
-# - A project upstream's CI builds, by the name its workflows give it (`picosoc`,
-#   `regression/<case>`), which then has no design file. `--ci-list` fails on a CI project with
-#   neither a design file nor an entry here, on one with both, and on an entry for a project the
-#   workflows do not build.
-# - A design file, `<dir>/<file>.yaml`, of a project upstream's CI does not build, which builds
-#   on neither route. `--all` reports it as excluded instead of building it; naming the design
-#   file builds it all the same, to see whether the exclusion is still needed. An entry for a
-#   design file of a CI project, or for one that does not exist, is an error.
+# What this fork does not build through xeda, with the reason and the evidence (EXCLUDED.md has it
+# in full). `xeda_check.py` reads this file. An entry names a project that upstream's CI builds and
+# that has no design file (`picosoc`, `regression/<case>`), or a design file (`<dir>/<file>.yaml`)
+# of a project that upstream's CI does not build and that builds on neither route.
 excluded:
   regression/bufr-pad-site:
     reason: >-

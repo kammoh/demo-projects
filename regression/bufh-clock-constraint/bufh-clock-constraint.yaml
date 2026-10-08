@@ -1,5 +1,4 @@
-# xeda design for the regression case `bufh-clock-constraint`: what `regression/run.sh bufh-clock-constraint` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for bufh-clock-constraint: what `regression/run.sh bufh-clock-constraint` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/bufh-clock-constraint/bufh-clock-constraint.yaml
 name: reg-bufh-clock-constraint

@@ -1,5 +1,4 @@
-# xeda design for the regression case `config-primitive-startupe2`: what `regression/run.sh config-primitive-startupe2` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for config-primitive-startupe2: what `regression/run.sh config-primitive-startupe2` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/config-primitive-startupe2/config-primitive-startupe2.yaml
 name: reg-config-primitive-startupe2

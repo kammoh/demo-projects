@@ -1,5 +1,4 @@
-# xeda design for the regression case `srl-wemux`: what `regression/run.sh srl-wemux` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for srl-wemux: what `regression/run.sh srl-wemux` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/srl-wemux/srl-wemux.yaml
 name: reg-srl-wemux

@@ -1,5 +1,4 @@
-# xeda design for the regression case `bufio-in-use`: what `regression/run.sh bufio-in-use` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for bufio-in-use: what `regression/run.sh bufio-in-use` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/bufio-in-use/bufio-in-use.yaml
 name: reg-bufio-in-use

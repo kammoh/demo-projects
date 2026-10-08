@@ -1,5 +1,4 @@
-# xeda design for the regression case `bufg-fabric-driven`: what `regression/run.sh bufg-fabric-driven` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for bufg-fabric-driven: what `regression/run.sh bufg-fabric-driven` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/bufg-fabric-driven/bufg-fabric-driven.yaml
 name: reg-bufg-fabric-driven

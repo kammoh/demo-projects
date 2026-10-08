@@ -1,5 +1,4 @@
-# xeda design for the regression case `clock-srcc-bufg`: what `regression/run.sh clock-srcc-bufg` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for clock-srcc-bufg: what `regression/run.sh clock-srcc-bufg` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/clock-srcc-bufg/clock-srcc-bufg.yaml
 name: reg-clock-srcc-bufg

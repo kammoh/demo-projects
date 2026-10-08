@@ -1,5 +1,4 @@
-# xeda design for the regression case `dup-package-pin`: what `regression/run.sh dup-package-pin` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for dup-package-pin: what `regression/run.sh dup-package-pin` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/dup-package-pin/dup-package-pin.yaml
 name: reg-dup-package-pin

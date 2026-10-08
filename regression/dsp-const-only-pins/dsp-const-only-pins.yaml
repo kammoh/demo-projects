@@ -1,5 +1,4 @@
-# xeda design for the regression case `dsp-const-only-pins`: what `regression/run.sh dsp-const-only-pins` builds
-# (`synth_xilinx -flatten -abc9 -nocarry`, then nextpnr with `--timing-allow-fail`).
+# xeda design for dsp-const-only-pins: what `regression/run.sh dsp-const-only-pins` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/dsp-const-only-pins/dsp-const-only-pins.yaml
 name: reg-dsp-const-only-pins

@@ -1,5 +1,4 @@
-# xeda design for the regression case `bram-sdp-unused-port`: what `regression/run.sh bram-sdp-unused-port` builds
-# (`synth_xilinx -flatten -abc9 -nocarry -nodsp`, then nextpnr with `--timing-allow-fail`).
+# xeda design for bram-sdp-unused-port: what `regression/run.sh bram-sdp-unused-port` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run nextpnr regression/bram-sdp-unused-port/bram-sdp-unused-port.yaml
 name: reg-bram-sdp-unused-port
