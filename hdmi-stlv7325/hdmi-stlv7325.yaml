@@ -1,4 +1,4 @@
-# xeda design for hdmi-stlv7325: what `make -C hdmi-stlv7325` builds, from the LiteX SoC of `hdmi_demo.py`.
+# xeda design for hdmi-stlv7325: what `make -C hdmi-stlv7325 PART=xc7k325tffg676-2` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found:
 #   xeda run yosys_fpga hdmi-stlv7325/hdmi-stlv7325.yaml
 name: hdmi-stlv7325

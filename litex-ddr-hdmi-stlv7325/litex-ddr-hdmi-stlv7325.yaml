@@ -1,4 +1,4 @@
-# xeda design for litex-ddr-hdmi-stlv7325: what `make -C litex-ddr-hdmi-stlv7325` builds.
+# xeda design for litex-ddr-hdmi-stlv7325: what `make -C litex-ddr-hdmi-stlv7325 PART=xc7k325tffg676-2` builds.
 # Build it from the repository root, so that `xedaproject.yaml` is found.
 name: litex-ddr-hdmi-stlv7325
 rtl:
