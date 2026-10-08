@@ -13,3 +13,5 @@ flows:
   yosys_fpga:
     fpga:
       part: xc7a35tcpg236-1
+  openfpgaloader:
+    board: basys_3

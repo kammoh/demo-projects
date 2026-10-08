@@ -10,7 +10,8 @@ rtl:
 flows:
   yosys_fpga:
     fpga:
-      part: xc7k325tffg676-1
+      part: xc7k325tffg676-2
   nextpnr:
-    timing_allow_fail: true
     extra_args: ["--freq", "50"]
+  openfpgaloader:
+    board: stlv7325_v2

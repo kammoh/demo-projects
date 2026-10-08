@@ -8,5 +8,8 @@ rtl:
     - blinky.xdc
 flows:
   yosys_fpga:
-    fpga:
-      part: xc7k325tffg676-1
+    fpga.part: xc7k325tffg676-2
+  vivado_synth:
+    fpga.part: xc7k325tffg676-2
+  openfpgaloader:
+    board: stlv7325_v2
