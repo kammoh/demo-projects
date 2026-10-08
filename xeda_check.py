@@ -67,7 +67,7 @@ Per-design arguments for xeda (`timing_allow_fail`, `extra_args`, `synth_flags`)
 file's own; the checker adds none. The one thing it passes to `make` is `MAKE_ARGS`: picosoc's
 `BOARD=`, which its Makefile selects the part by and for which xeda has no counterpart, and the
 `PART=` of a design file that builds a demo for another part than its Makefile names (the Arty
-A7-100T).
+A7-100T, and the speed grade -2 of the STLV7325 v2).
 `tests/test_xeda_check.py` is the oracle of all of this: a broken design file fails each mode.
 
     python xeda_check.py --qor --all --out qor           # quality of results, not identity
@@ -108,13 +108,18 @@ HERE = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 
 # `make` variables a demo needs on its command line, by design file: the Makefile of `picosoc`
-# selects its part by BOARD, and the Arty A7-100T is the Arty demo's Makefile with another PART
+# selects its part by BOARD, and a design file that names another part than its Makefile (the Arty
+# A7-100T, and the speed grade -2 of the STLV7325 v2) builds the demo with that PART
 MAKE_ARGS: dict[str, list[str]] = {
     **{
         f"picosoc/picosoc-{board}.yaml": [f"BOARD={board}"]
         for board in ("qmtech", "genesys2", "kx2", "hpc_420t")
     },
     "blinky-digilent-arty/blinky-digilent-arty-a7-100.yaml": ["PART=xc7a100tcsg324-1"],
+    **{
+        f"{demo}/{demo}.yaml": ["PART=xc7k325tffg676-2"]
+        for demo in ("blinky-stlv7325", "hdmi-stlv7325", "litex-ddr-hdmi-stlv7325")
+    },
 }
 
 # directories next to a demo that its Makefile may name (`../vexriscv/VexRiscv.v`)
@@ -201,48 +206,21 @@ def generator_spec(demo: Path) -> dict | None:
     }
 
 
-# the environment variables a design file's `rtl.generator.sources` names LiteX's packages by
-# (`hdmi-stlv7325.yaml`): the directory of each package the interpreter imports
-LITEX_PACKAGE_VARIABLES = {
-    "LITEX_DIR": "litex",
-    "LITEX_BOARDS_DIR": "litex_boards",
-    "MIGEN_DIR": "migen",
-}
-
-
-def litex_package_dirs(python: str) -> dict[str, str]:
-    """`LITEX_PACKAGE_VARIABLES` set to where *python* imports each package from: an editable
-    clone or its `site-packages`, whichever it is, so that xeda judges the files the generator
-    reads."""
-    code = (
-        "import importlib, os\n"
-        "for var, name in " + repr(sorted(LITEX_PACKAGE_VARIABLES.items())) + ":\n"
-        "    print(var, os.path.dirname(importlib.import_module(name).__file__), sep='=')\n"
-    )
-    probe = subprocess.run([python, "-c", code], cwd="/", capture_output=True, text=True)
-    if probe.returncode:
-        raise SetupError(f"{python} does not import litex, litex_boards and migen: {probe.stderr}")
-    return dict(line.split("=", 1) for line in probe.stdout.splitlines())
-
-
 def litex_shim(spec: dict, python: str | None, work: Path) -> dict[str, str]:
     """The environment for a process that runs the generator by the name the design gives it
     (`python3`): `PATH` leads with a directory whose `python3` is the interpreter that imports LiteX.
     openXC7's `export.sh` puts its own venv's `python3` first, which has no LiteX. A wrapper, not a
-    link: a venv's `python` finds its packages beside the path it was started by. The same
-    interpreter's package directories (`litex_package_dirs`) are set too, for the design's
-    `rtl.generator.sources`."""
+    link: a venv's `python` finds its packages beside the path it was started by."""
     interpreter = litex_python(python)
-    env = litex_package_dirs(interpreter)
     executable = Path(spec["executable"])
     if executable.parent != Path("."):
-        return env
+        return {}
     shim = work / "litex-bin"
     shim.mkdir(parents=True, exist_ok=True)
     wrapper = shim / executable.name
     wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(interpreter)} "$@"\n')
     wrapper.chmod(0o755)
-    return {**env, "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+    return {"PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
 
 
 def generate_inputs(demo: Path, work: Path, python: str | None, regenerate: bool, log) -> list[str]:

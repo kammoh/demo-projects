@@ -488,6 +488,34 @@ def test_the_chip_database_is_made_for_the_part_the_make_arguments_name(tmp_path
     assert (chipdb / "partb.bin").read_text() == "db\n"
 
 
+def test_every_design_file_names_the_part_its_makefile_builds(tmp_path: Path) -> None:
+    """Both routes build one part: the part of a design file is the `PART` that its Makefile
+    evaluates to with the `MAKE_ARGS` of the design file. `--synth-only` fails a design file that
+    disagrees, but it needs the toolchain."""
+    shutil.copy(FORK / "openXC7.mk", tmp_path / "openXC7.mk")
+    designs = [  # the rule of `designs_for`: `<dir>/<dir>.yaml` and `<dir>/<dir>-<variant>.yaml`
+        path
+        for path in sorted(FORK.glob("*/*.yaml"))
+        if path.stem == path.parent.name or path.stem.startswith(path.parent.name + "-")
+    ]
+    assert len(designs) > 20
+    disagreements = []
+    for design in designs:
+        name = design.relative_to(FORK).as_posix()
+        demo = tmp_path / design.parent.name
+        demo.mkdir(exist_ok=True)
+        shutil.copy(design.parent / "Makefile", demo / "Makefile")
+        variables = xeda_check.make_variables(
+            demo, dict(os.environ), xeda_check.MAKE_ARGS.get(name, [])
+        )
+        flows = (xeda_check.load_yaml_file(design) or {}).get("flows") or {}
+        section = xeda_check.expand_dotted(flows.get("yosys_fpga") or {})
+        named = (section.get("fpga") or {}).get("part")
+        if named != variables["PART"]:
+            disagreements.append(f"{name} names {named}, its Makefile builds {variables['PART']}")
+    assert not disagreements
+
+
 def with_part(data: bytes, part: bytes) -> bytes:
     """*data*, a bitstream, with the part (`b`) field of its header replaced by *part*."""
     i = 13
